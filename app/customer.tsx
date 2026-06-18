@@ -1,5 +1,5 @@
+import { router } from "expo-router";
 import { useEffect, useRef, useState } from "react";
-
 import {
   Alert,
   StatusBar,
@@ -47,6 +47,9 @@ export default function CustomerScreen() {
 
   const [destination, setDestination] =
     useState<any>(null);
+  
+  const [fare, setFare] =
+  useState(0);
 
   const [drivers, setDrivers] =
     useState<any>([]);
@@ -96,6 +99,8 @@ const [destinationAddress, setDestinationAddress] =
     }
 
   }, [source]);
+  const [showMenu, setShowMenu] =
+  useState(false);
 
   // CURRENT LOCATION
   const getCurrentLocation = async () => {
@@ -457,6 +462,35 @@ setDestinationAddress(
       <StatusBar
         barStyle="dark-content"
       />
+ <TouchableOpacity
+
+  onPress={() =>
+    router.push("/history")
+  }
+
+  style={{
+    position: "absolute",
+    top: 65,
+    right: 20,
+    zIndex: 999,
+    backgroundColor: "#2563EB",
+    paddingHorizontal: 15,
+    paddingVertical: 10,
+    borderRadius: 10,
+  }}
+
+>
+
+  <Text
+    style={{
+      color: "white",
+      fontWeight: "bold",
+    }}
+  >
+    Ride History
+  </Text>
+
+</TouchableOpacity>
 
       {/* NO DRIVER */}
       {drivers.length === 0 && (
@@ -609,8 +643,15 @@ setDestinationAddress(
 
               setDistance(
                 result.distance.toFixed(1)
-              );
+              );const rideFare =
+  50 +
+  result.distance * 10;
 
+setFare(
+  Math.round(rideFare)
+);
+
+              
               setDuration(
                 Math.ceil(result.duration)
               );
@@ -891,8 +932,18 @@ setPickupAddress(
     >
       {rideOTP}
     </Text>
+    <Text
+  style={{
+    fontSize: 18,
+    fontWeight: "bold",
+    color: "#22C55E",
+  }}
+>
+  ₹{fare}
+</Text>
 
   </View>
+  
 
 )}
 
@@ -1168,5 +1219,8 @@ const styles = StyleSheet.create({
 
     fontSize: 16,
   },
+  
 
 });
+
+
