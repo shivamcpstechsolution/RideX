@@ -1,17 +1,22 @@
 {
   "expo": {
-    "name": "LiveTrackingApp",
-    "slug": "LiveTrackingApp",
+    "name": "RideX",
+    "slug": "ridex",
     "version": "1.0.0",
     "orientation": "portrait",
-    "scheme": "livetrackingapp",
+    "scheme": "ridex",
     "userInterfaceStyle": "automatic",
+    "icon": "./assets/images/icon.png",
     "android": {
-      "package": "com.shivam004.LiveTrackingApp",
+      "package": "com.shivam004.ridex",
       "config": {
         "googleMaps": {
           "apiKey": "AIzaSyByV5E8B_TD71Hb4d1HN6s-T6GiYCrTZtM"
         }
+      },
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/android-icon-foreground.png",
+        "backgroundColor": "#0F172A"
       },
       "permissions": [
         "ACCESS_FINE_LOCATION",
@@ -25,11 +30,16 @@
       "expo-router",
       "expo-location"
     ],
+    "splash": {
+      "image": "./assets/images/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0F172A"
+    },
     "experiments": {
       "typedRoutes": true
     },
     "ios": {
-      "bundleIdentifier": "com.shivam004.LiveTrackingApp"
+      "bundleIdentifier": "com.shivam004.ridex"
     },
     "extra": {
       "router": {},

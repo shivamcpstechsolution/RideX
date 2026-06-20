@@ -1,13 +1,14 @@
 import { router } from "expo-router";
 import { useEffect, useRef } from "react";
 import {
-    Animated,
-    Easing,
-    StatusBar,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  Animated,
+  Easing,
+  Image,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View
 } from "react-native";
 
 function RouteSweep({
@@ -58,6 +59,7 @@ export default function HomeScreen() {
 
       <View style={styles.bgBlobOne} />
       <View style={styles.bgBlobTwo} />
+      <View style={styles.bgBlobThree} />
       <View style={styles.bgGrid} />
 
       <View style={styles.topMeta}>
@@ -71,7 +73,11 @@ export default function HomeScreen() {
       <View style={styles.brandSection}>
         <View style={styles.logoShell}>
           <View style={styles.logoInner}>
-            <Text style={styles.logo}>R</Text>
+            <Image
+              source={require("../assets/images/logg.png")}
+              style={styles.logoImage}
+              resizeMode="contain"
+            />
           </View>
         </View>
         <Text style={styles.brand}>RideX</Text>
@@ -88,11 +94,13 @@ export default function HomeScreen() {
         </View>
 
         <View style={styles.routeMap}>
+          <View style={styles.pinStartRing} />
           <View style={styles.pinStart} />
+          <View style={styles.pinEndRing} />
           <View style={styles.pinEnd} />
           <View style={styles.routePath} />
-          <RouteSweep top={28} width={180} delay={0} />
-          <RouteSweep top={70} width={220} delay={900} />
+          <RouteSweep top={18} width={180} delay={0} />
+          <RouteSweep top={60} width={220} delay={900} />
         </View>
 
         <View style={styles.quickStats}>
@@ -109,26 +117,26 @@ export default function HomeScreen() {
       </View>
 
       <View style={styles.cardContainer}>
-        <TouchableOpacity style={styles.card} onPress={() => router.push("/customer")} activeOpacity={0.9}>
+        <TouchableOpacity style={styles.card} onPress={() => router.push("/customer")} activeOpacity={0.85}>
           <View style={styles.cardAccentCustomer} />
-          <View style={styles.cardIconWrap}>
-            <Text style={styles.icon}>👤</Text>
+          <View style={[styles.cardIconWrap, { backgroundColor: "rgba(37, 99, 235, 0.08)" }]}>
+            <Text style={[styles.icon, { color: "#2563EB" }]}>👤</Text>
           </View>
           <View style={styles.cardBody}>
             <Text style={styles.cardTitle}>Customer</Text>
-            <Text style={styles.cardSub}>Book and track</Text>
+            <Text style={styles.cardSub}>Book and track rides</Text>
           </View>
           <Text style={styles.cardArrow}>›</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.card} onPress={() => router.push("/driver")} activeOpacity={0.9}>
+        <TouchableOpacity style={styles.card} onPress={() => router.push("/driver")} activeOpacity={0.85}>
           <View style={styles.cardAccentDriver} />
-          <View style={styles.cardIconWrap}>
-            <Text style={styles.icon}>🚗</Text>
+          <View style={[styles.cardIconWrap, { backgroundColor: "rgba(16, 185, 129, 0.08)" }]}>
+            <Text style={[styles.icon, { color: "#10B981" }]}>🚗</Text>
           </View>
           <View style={styles.cardBody}>
             <Text style={styles.cardTitle}>Driver</Text>
-            <Text style={styles.cardSub}>Go live</Text>
+            <Text style={styles.cardSub}>Go live and accept requests</Text>
           </View>
           <Text style={styles.cardArrow}>›</Text>
         </TouchableOpacity>
@@ -142,8 +150,8 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#F5F7FB",
     paddingHorizontal: 20,
-    paddingTop: 72,
-    paddingBottom: 24,
+    paddingTop: 52,
+    paddingBottom: 20,
     overflow: "hidden",
   },
   bgBlobOne: {
@@ -163,6 +171,15 @@ const styles = StyleSheet.create({
     height: 280,
     borderRadius: 280,
     backgroundColor: "rgba(15, 23, 42, 0.05)",
+  },
+  bgBlobThree: {
+    position: "absolute",
+    top: 320,
+    right: -130,
+    width: 300,
+    height: 300,
+    borderRadius: 300,
+    backgroundColor: "rgba(99, 102, 241, 0.08)",
   },
   bgGrid: {
     position: "absolute",
@@ -211,51 +228,53 @@ const styles = StyleSheet.create({
   brandSection: {
     alignItems: "center",
     marginTop: 4,
-    marginBottom: 16,
+    marginBottom: 8,
   },
   logoShell: {
-    width: 108,
-    height: 108,
-    borderRadius: 34,
-    backgroundColor: "rgba(15, 23, 42, 0.95)",
+    width: 92,
+    height: 92,
+    borderRadius: 28,
+    backgroundColor: "#0F172A",
     alignItems: "center",
     justifyContent: "center",
-    shadowColor: "#000",
-    shadowOpacity: 0.12,
+    borderWidth: 1.5,
+    borderColor: "rgba(255, 255, 255, 0.12)",
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.22,
     shadowRadius: 20,
     shadowOffset: { width: 0, height: 10 },
-    elevation: 10,
+    elevation: 12,
   },
   logoInner: {
-    width: 72,
-    height: 72,
-    borderRadius: 24,
-    borderWidth: 2,
-    borderColor: "rgba(255,255,255,0.85)",
+    width: 64,
+    height: 64,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.22)",
+    backgroundColor: "rgba(255,255,255,0.03)",
     alignItems: "center",
     justifyContent: "center",
   },
-  logo: {
-    color: "white",
-    fontSize: 30,
-    fontWeight: "900",
+  logoImage: {
+    width: 38,
+    height: 38,
   },
   brand: {
-    marginTop: 16,
-    fontSize: 40,
+    marginTop: 8,
+    fontSize: 32,
     fontWeight: "900",
     color: "#0F172A",
-    letterSpacing: -1.4,
+    letterSpacing: -1.2,
   },
   subtitle: {
-    marginTop: 6,
+    marginTop: 4,
     color: "#475569",
-    fontSize: 15,
+    fontSize: 14,
   },
   brandPill: {
-    marginTop: 14,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
+    marginTop: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
     borderRadius: 999,
     backgroundColor: "rgba(37, 99, 235, 0.08)",
     borderWidth: 1,
@@ -263,22 +282,22 @@ const styles = StyleSheet.create({
   },
   brandPillText: {
     color: "#2563EB",
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: "800",
     letterSpacing: 0.4,
   },
   routeCard: {
-    backgroundColor: "rgba(255,255,255,0.95)",
+    backgroundColor: "rgba(255,255,255,0.96)",
     borderRadius: 30,
-    padding: 18,
+    padding: 14,
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.08)",
-    shadowColor: "#000",
-    shadowOpacity: 0.08,
-    shadowRadius: 18,
+    borderColor: "rgba(15, 23, 42, 0.06)",
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.07,
+    shadowRadius: 20,
     shadowOffset: { width: 0, height: 10 },
     elevation: 6,
-    marginBottom: 14,
+    marginBottom: 10,
   },
   routeHeader: {
     flexDirection: "row",
@@ -299,44 +318,70 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
   },
   routeMap: {
-    height: 118,
-    borderRadius: 22,
+    height: 96,
+    borderRadius: 20,
     backgroundColor: "#F8FAFF",
     borderWidth: 1,
     borderColor: "rgba(37, 99, 235, 0.08)",
-    marginBottom: 14,
+    marginBottom: 10,
     overflow: "hidden",
   },
   routePath: {
     position: "absolute",
-    top: 54,
+    top: 47,
     left: 32,
     right: 32,
     height: 3,
     borderRadius: 999,
     backgroundColor: "rgba(37, 99, 235, 0.16)",
   },
+  pinStartRing: {
+    position: "absolute",
+    top: 30,
+    left: 15,
+    width: 36,
+    height: 36,
+    borderRadius: 36,
+    backgroundColor: "rgba(34, 197, 94, 0.18)",
+  },
   pinStart: {
     position: "absolute",
-    top: 34,
+    top: 39,
     left: 24,
     width: 18,
     height: 18,
     borderRadius: 18,
     backgroundColor: "#22C55E",
     borderWidth: 4,
-    borderColor: "rgba(255,255,255,0.9)",
+    borderColor: "#FFFFFF",
+    shadowColor: "#22C55E",
+    shadowOpacity: 0.4,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+  },
+  pinEndRing: {
+    position: "absolute",
+    top: 30,
+    right: 15,
+    width: 36,
+    height: 36,
+    borderRadius: 36,
+    backgroundColor: "rgba(239, 68, 68, 0.18)",
   },
   pinEnd: {
     position: "absolute",
-    top: 34,
+    top: 39,
     right: 24,
     width: 18,
     height: 18,
     borderRadius: 18,
     backgroundColor: "#EF4444",
     borderWidth: 4,
-    borderColor: "rgba(255,255,255,0.9)",
+    borderColor: "#FFFFFF",
+    shadowColor: "#EF4444",
+    shadowOpacity: 0.4,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
   },
   sweepRow: {
     position: "absolute",
@@ -396,14 +441,14 @@ const styles = StyleSheet.create({
   card: {
     backgroundColor: "rgba(255,255,255,0.98)",
     borderRadius: 24,
-    paddingVertical: 18,
+    paddingVertical: 14,
     paddingHorizontal: 16,
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.08)",
-    shadowColor: "#000",
-    shadowOpacity: 0.08,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 8 },
+    borderColor: "rgba(15, 23, 42, 0.05)",
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.06,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 10 },
     elevation: 5,
     flexDirection: "row",
     alignItems: "center",
