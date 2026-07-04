@@ -8,27 +8,117 @@ import {
     TouchableOpacity,
     View,
 } from "react-native";
+import { router } from "expo-router";
 
 import * as Location from "expo-location";
 import MapView, { Marker } from "react-native-maps";
 
-import { onValue, ref, set } from "firebase/database";
+import { onValue, ref, set, update } from "firebase/database";
 
 import { db } from "../firebaseConfig";
+import { getCurrentUser } from "../services/authService";
 
 export default function DriverScreen() {
   const mapRef = useRef<any>(null);
+  const user = getCurrentUser();
 
   const [location, setLocation] = useState<any>(null);
   const [rideRequest, setRideRequest] = useState<any>(null);
   const [enteredOTP, setEnteredOTP] = useState("");
   const [lastRideId, setLastRideId] = useState("");
   const [isCompletingRide, setIsCompletingRide] = useState(false);
+  const [isActive, setIsActive] = useState(true);
 
   useEffect(() => {
+    if (!user) {
+      router.replace("/login");
+      return;
+    }
     startTracking();
     listenForRideRequests();
   }, []);
+
+  useEffect(() => {
+    let interval: any;
+    
+    if (rideRequest && rideRequest.status === "accepted" && location && rideRequest.source) {
+      let currentLat = location.latitude;
+      let currentLng = location.longitude;
+      const targetLat = rideRequest.source.latitude;
+      const targetLng = rideRequest.source.longitude;
+
+      const steps = 20;
+      const latStep = (targetLat - currentLat) / steps;
+      const lngStep = (targetLng - currentLng) / steps;
+      let stepCount = 0;
+
+      interval = setInterval(async () => {
+        if (stepCount >= steps) {
+          clearInterval(interval);
+          return;
+        }
+
+        currentLat += latStep;
+        currentLng += lngStep;
+        stepCount += 1;
+
+        const updatedCoords = {
+          latitude: currentLat,
+          longitude: currentLng,
+        };
+
+        setLocation(updatedCoords);
+
+        if (user) {
+          await update(ref(db, `drivers/${user.uid}`), {
+            latitude: currentLat,
+            longitude: currentLng,
+          });
+        }
+      }, 1000);
+    }
+
+    if (rideRequest && rideRequest.status === "started" && location && rideRequest.destination) {
+      let currentLat = location.latitude;
+      let currentLng = location.longitude;
+      const targetLat = rideRequest.destination.latitude;
+      const targetLng = rideRequest.destination.longitude;
+
+      const steps = 30;
+      const latStep = (targetLat - currentLat) / steps;
+      const lngStep = (targetLng - currentLng) / steps;
+      let stepCount = 0;
+
+      interval = setInterval(async () => {
+        if (stepCount >= steps) {
+          clearInterval(interval);
+          return;
+        }
+
+        currentLat += latStep;
+        currentLng += lngStep;
+        stepCount += 1;
+
+        const updatedCoords = {
+          latitude: currentLat,
+          longitude: currentLng,
+        };
+
+        setLocation(updatedCoords);
+
+        if (user) {
+          await update(ref(db, `drivers/${user.uid}`), {
+            latitude: currentLat,
+            longitude: currentLng,
+          });
+        }
+      }, 1000);
+    }
+
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [rideRequest?.status]);
 
   const startTracking = async () => {
     const { status } = await Location.requestForegroundPermissionsAsync();
@@ -51,7 +141,13 @@ export default function DriverScreen() {
 
         setLocation(coords);
 
-        await set(ref(db, "drivers/driver1"), coords);
+        if (user) {
+          await set(ref(db, `drivers/${user.uid}`), {
+            latitude: coords.latitude,
+            longitude: coords.longitude,
+            isActive,
+          });
+        }
 
         mapRef.current?.animateCamera({
           center: coords,
@@ -78,14 +174,43 @@ export default function DriverScreen() {
     });
   };
 
+  const toggleAvailability = async () => {
+    const nextState = !isActive;
+    setIsActive(nextState);
+
+    if (!user) return;
+
+    if (location) {
+      await set(ref(db, `drivers/${user.uid}`), {
+        latitude: location.latitude,
+        longitude: location.longitude,
+        isActive: nextState,
+      });
+    } else {
+      await set(ref(db, `drivers/${user.uid}/isActive`), nextState);
+    }
+  };
+
   const acceptRide = async () => {
-    await set(ref(db, "rides/currentRide/status"), "accepted");
+    if (!rideRequest || !user) return;
+
+    await set(ref(db, "rides/currentRide"), {
+      ...rideRequest,
+      status: "accepted",
+      driverId: user.uid,
+      driverName: user.displayName || "Driver",
+    });
     Alert.alert("Ride Accepted 🚖");
   };
 
   const startRide = async () => {
+    if (!rideRequest) return;
+
     if (enteredOTP === String(rideRequest?.otp)) {
-      await set(ref(db, "rides/currentRide/status"), "started");
+      await set(ref(db, "rides/currentRide"), {
+        ...rideRequest,
+        status: "started",
+      });
       Alert.alert("OTP Verified ✅");
     } else {
       Alert.alert("Invalid OTP ❌");
@@ -124,7 +249,12 @@ export default function DriverScreen() {
   };
 
   const rejectRide = async () => {
-    await set(ref(db, "rides/currentRide/status"), "rejected");
+    if (!rideRequest) return;
+
+    await set(ref(db, "rides/currentRide"), {
+      ...rideRequest,
+      status: "rejected",
+    });
     Alert.alert("Ride Rejected");
   };
 
@@ -162,10 +292,15 @@ export default function DriverScreen() {
             <Text style={styles.title}>Live tracking active</Text>
           </View>
 
-          <View style={styles.livePill}>
-            <View style={styles.liveDot} />
-            <Text style={styles.liveText}>ON</Text>
-          </View>
+          <TouchableOpacity
+            onPress={toggleAvailability}
+            style={[styles.livePill, !isActive && styles.livePillInactive]}
+          >
+            <View style={[styles.liveDot, !isActive && styles.liveDotInactive]} />
+            <Text style={[styles.liveText, !isActive && styles.liveTextInactive]}>
+              {isActive ? "ACTIVE" : "INACTIVE"}
+            </Text>
+          </TouchableOpacity>
         </View>
 
         <Text style={styles.sub}>
@@ -179,6 +314,11 @@ export default function DriverScreen() {
             <View>
               <Text style={styles.rideEyebrow}>Incoming ride</Text>
               <Text style={styles.rideTitle}>Customer request</Text>
+              {rideRequest?.bookingForSomeoneElse && (
+                <Text style={styles.passengerHighlightText}>
+                  👥 For: {rideRequest.passengerName} ({rideRequest.passengerPhone})
+                </Text>
+              )}
             </View>
             <View style={styles.statusBadge}>
               <Text style={styles.statusBadgeText}>{rideRequest?.status}</Text>
@@ -336,11 +476,22 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     backgroundColor: "#22C55E",
   },
+  livePillInactive: {
+    backgroundColor: "rgba(248, 113, 113, 0.14)",
+    borderWidth: 1,
+    borderColor: "rgba(248, 113, 113, 0.24)",
+  },
   liveText: {
     color: "#86EFAC",
     fontSize: 12,
     fontWeight: "800",
     letterSpacing: 1,
+  },
+  liveTextInactive: {
+    color: "#FCA5A5",
+  },
+  liveDotInactive: {
+    backgroundColor: "#F87171",
   },
   rideCard: {
     position: "absolute",
@@ -462,6 +613,12 @@ const styles = StyleSheet.create({
   btnText: {
     color: "white",
     fontSize: 16,
-    fontWeight: "bold",
+    fontWeight: "800",
+  },
+  passengerHighlightText: {
+    fontSize: 13,
+    color: "#475569",
+    fontWeight: "700",
+    marginTop: 4,
   },
 });
