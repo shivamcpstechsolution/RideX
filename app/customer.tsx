@@ -1,24 +1,26 @@
 import { router } from "expo-router";
 import { useEffect, useRef, useState } from "react";
-import { Alert, StatusBar, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { Alert, StatusBar, StyleSheet, Text, TouchableOpacity, View, TextInput, ScrollView, ActivityIndicator } from "react-native";
 
 import * as Location from "expo-location";
-import { onValue, ref, set } from "firebase/database";
+import { onValue, ref, set, push } from "firebase/database";
 import { getDistance } from "geolib";
-import { GooglePlacesAutocomplete } from "react-native-google-places-autocomplete";
 import MapView, { Marker } from "react-native-maps";
 import MapViewDirections from "react-native-maps-directions";
 
 import { db } from "../firebaseConfig";
 import { getCurrentUser, logoutUser } from "../services/authService";
 
-const GOOGLE_MAPS_APIKEY = "AIzaSyByV5E8B_TD71Hb4d1HN6s-T6GiYCrTZtM";
+const GOOGLE_MAPS_APIKEY = "AIzaSyBzGM7ugM4WVLYbaoZ7e7PcyKpSSJhRWgo";
+const MAX_DRIVER_RADIUS_KM = 10;
+const MAX_RIDE_DISTANCE_KM = 35;
 
 export default function CustomerScreen() {
   const mapRef = useRef<any>(null);
-  const pickupRef = useRef<any>(null);
   const user = getCurrentUser();
 
+
+  const [currentRideId, setCurrentRideId] = useState<string | null>(null);
   const [source, setSource] = useState<any>(null);
   const [destination, setDestination] = useState<any>(null);
   const [fare, setFare] = useState(0);
@@ -40,9 +42,121 @@ export default function CustomerScreen() {
   const [rideOTP, setRideOTP] = useState("");
   const [activeTab, setActiveTab] = useState<"home" | "services" | "activity" | "account">("home");
   const [rideHistory, setRideHistory] = useState<any[]>([]);
-  const [isBookingForSomeoneElse, setIsBookingForSomeoneElse] = useState<boolean>(false);
-  const [passengerName, setPassengerName] = useState("");
-  const [passengerPhone, setPassengerPhone] = useState("");
+
+  const [pickupSearchText, setPickupSearchText] = useState("");
+  const [destinationSearchText, setDestinationSearchText] = useState("");
+  const [pickupSuggestions, setPickupSuggestions] = useState<any[]>([]);
+  const [destinationSuggestions, setDestinationSuggestions] = useState<any[]>([]);
+  const [loadingPickup, setLoadingPickup] = useState(false);
+  const [loadingDestination, setLoadingDestination] = useState(false);
+
+  const pickupTimeoutRef = useRef<any>(null);
+  const destTimeoutRef = useRef<any>(null);
+
+  const fetchAutocomplete = async (
+    inputText: string,
+    setSuggestions: (s: any[]) => void,
+    setLoading: (l: boolean) => void
+  ) => {
+    if (!inputText || inputText.trim().length < 2) {
+      setSuggestions([]);
+      return;
+    }
+    setLoading(true);
+    try {
+      console.log("Fetching suggestions for query:", inputText);
+      const response = await fetch("https://places.googleapis.com/v1/places:autocomplete", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Goog-Api-Key": GOOGLE_MAPS_APIKEY,
+        },
+        body: JSON.stringify({
+          input: inputText,
+          includedRegionCodes: ["in"],
+        }),
+      });
+      const data = await response.json();
+      console.log("Suggestions API response:", JSON.stringify(data));
+      if (data && data.suggestions) {
+        setSuggestions(data.suggestions);
+      } else {
+        setSuggestions([]);
+      }
+    } catch (error) {
+      console.error("Autocomplete API error:", error);
+      setSuggestions([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handlePickupTextChange = (text: string) => {
+    setPickupSearchText(text);
+    if (pickupTimeoutRef.current) {
+      clearTimeout(pickupTimeoutRef.current);
+    }
+    pickupTimeoutRef.current = setTimeout(() => {
+      fetchAutocomplete(text, setPickupSuggestions, setLoadingPickup);
+    }, 400);
+  };
+
+  const handleDestinationTextChange = (text: string) => {
+    setDestinationSearchText(text);
+    if (destTimeoutRef.current) {
+      clearTimeout(destTimeoutRef.current);
+    }
+    destTimeoutRef.current = setTimeout(() => {
+      fetchAutocomplete(text, setDestinationSuggestions, setLoadingDestination);
+    }, 400);
+  };
+
+  const handlePlaceSelect = async (
+    placeId: string,
+    description: string,
+    isPickup: boolean
+  ) => {
+    try {
+      const response = await fetch(`https://places.googleapis.com/v1/places/${placeId}`, {
+        method: "GET",
+        headers: {
+          "X-Goog-Api-Key": GOOGLE_MAPS_APIKEY,
+          "X-Goog-FieldMask": "id,location,displayName,formattedAddress",
+        },
+      });
+      const details = await response.json();
+
+      if (details && details.location) {
+        const lat = details.location.latitude;
+        const lng = details.location.longitude;
+        const address = details.formattedAddress || details.displayName?.text || description;
+
+        if (isPickup) {
+          setSource({ latitude: lat, longitude: lng });
+          setPickupAddress(address);
+          setPickupSearchText(address);
+          setPickupSuggestions([]);
+        } else {
+          setDestination({ latitude: lat, longitude: lng });
+          setDestinationAddress(address);
+          setDestinationSearchText(address);
+          setDestinationSuggestions([]);
+
+          mapRef.current?.animateCamera({
+            center: { latitude: lat, longitude: lng },
+            zoom: 14,
+          });
+        }
+      } else {
+        Alert.alert("Error", "Could not fetch location details.");
+      }
+    } catch (error) {
+      console.error("Place details API error:", error);
+      Alert.alert("Error", "Failed to retrieve location details.");
+    }
+  };
+
+  const driverLocSubRef = useRef<any>(null);
 
   useEffect(() => {
     if (!user) {
@@ -50,15 +164,116 @@ export default function CustomerScreen() {
       return;
     }
     getCurrentLocation();
-    listenForRideUpdates();
-    listenForRideHistory();
-  }, []);
+    const unsubHistory = listenForRideHistory();
+
+    return () => {
+      unsubHistory?.();
+      if (driverLocSubRef.current) {
+        driverLocSubRef.current();
+      }
+    };
+  }, [user]);
 
   useEffect(() => {
     if (source) {
-      getNearbyDrivers();
+      const unsubDrivers = getNearbyDrivers(source);
+      return () => {
+        unsubDrivers?.();
+      };
     }
   }, [source]);
+
+  // Listen for user's active ride ID from Firebase on mount/auth change
+  useEffect(() => {
+    if (!user) return;
+    const currentRideIdRef = ref(db, `users/${user.uid}/currentRideId`);
+    return onValue(currentRideIdRef, (snapshot) => {
+      const rideId = snapshot.val();
+      if (rideId) {
+        setCurrentRideId(rideId);
+      }
+    });
+  }, [user]);
+
+  // Listen to the unique active ride data
+  useEffect(() => {
+    if (!currentRideId) return;
+
+    const rideRef = ref(db, `rides/${currentRideId}`);
+    const unsubscribe = onValue(rideRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        const status = data.status || "pending";
+        setRideStatus(status);
+        setSource(data.source);
+        setDestination(data.destination);
+        setRideOTP(String(data.otp));
+        setPickupAddress(data.pickupAddress || "");
+        setDestinationAddress(data.destinationAddress || "");
+
+        if (status === "pending") {
+          setRideStatusTitle("Ride request sent");
+          setRideStatusMessage("Your request is live and the nearest active driver is being notified.");
+        } else if (status === "accepted") {
+          setRideStatusTitle("Driver accepted");
+          setRideStatusMessage("Your driver is on the way. Keep this screen open for live updates.");
+        } else if (status === "rejected") {
+          setRideStatusTitle("Ride request rejected");
+          setRideStatusMessage("Your request was declined. Please try booking again.");
+        } else if (status === "started") {
+          setRideStatusTitle("Trip started");
+          setRideStatusMessage("Have a safe journey!");
+        } else if (status === "completed") {
+          setRideStatusTitle("Trip completed");
+          setRideStatusMessage("Thank you for riding with RideX!");
+        } else if (status === "cancelled") {
+          setRideStatusTitle("Trip cancelled");
+          setRideStatusMessage("This ride request has been cancelled.");
+        }
+
+        if (data.driverId) {
+          const driverLocRef = ref(db, `drivers/${data.driverId}`);
+          if (driverLocSubRef.current) {
+            driverLocSubRef.current();
+          }
+          driverLocSubRef.current = onValue(driverLocRef, (driverSnap) => {
+            const driverLocVal = driverSnap.val();
+            if (driverLocVal) {
+              setSelectedDriver({
+                id: data.driverId,
+                latitude: driverLocVal.latitude,
+                longitude: driverLocVal.longitude,
+                driverDistance: data.driverDistance,
+              });
+            }
+          });
+        }
+      } else {
+        setRideStatus(null);
+        setRideOTP("");
+        setSelectedDriver(null);
+      }
+    });
+
+    return () => {
+      unsubscribe();
+      if (driverLocSubRef.current) {
+        driverLocSubRef.current();
+      }
+    };
+  }, [currentRideId]);
+  useEffect(() => {
+    if (pickupAddress) {
+      setPickupSearchText(pickupAddress);
+    }
+  }, [pickupAddress]);
+
+  useEffect(() => {
+    if (destinationAddress) {
+      setDestinationSearchText(destinationAddress);
+    }
+  }, [destinationAddress]);
+
   const getFareForVehicle = (vehicle: "bike" | "auto" | "car", dist: number) => {
     return Math.round(
       vehicle === "bike"
@@ -69,12 +284,78 @@ export default function CustomerScreen() {
     );
   };
 
+  // Local fallback distance calculation (if Directions API fails or is not billed)
   useEffect(() => {
-    if (distance) {
-      const calculatedFare = getFareForVehicle(selectedVehicle, Number(distance));
+    if (source && destination) {
+      const directDist = getDistance(source, destination) / 1000;
+      const estimatedRoadDist = directDist * 1.25; // 25% overhead for road curves
+      setDistance(estimatedRoadDist.toFixed(1));
+      const calculatedFare = getFareForVehicle(selectedVehicle, estimatedRoadDist);
       setFare(calculatedFare);
+      setDuration(Math.ceil(estimatedRoadDist * 2)); // Estimate 2 mins per km
     }
-  }, [selectedVehicle, distance]);
+  }, [source, destination, selectedVehicle]);
+  const resetBookingState = async () => {
+    try {
+      if (currentRideId) {
+        await set(ref(db, `rides/${currentRideId}`), null);
+      }
+      if (user) {
+        await set(ref(db, `users/${user.uid}/currentRideId`), null);
+      }
+    } catch (err) {
+      console.error("Error clearing current ride:", err);
+    }
+    setCurrentRideId(null);
+    setRideStatus(null);
+    setRideOTP("");
+    setSelectedDriver(null);
+    setDestination(null);
+    setDestinationAddress("");
+    setDistance(null);
+    setDuration(null);
+    setFare(0);
+    setSearchingDriver(false);
+    setShowArrivalCard(false);
+    setDriverETA(null);
+    setPickupSearchText("");
+    setDestinationSearchText("");
+    setPickupSuggestions([]);
+    setDestinationSuggestions([]);
+    getCurrentLocation();
+  };
+
+  const cancelRideRequest = async () => {
+    try {
+      if (currentRideId) {
+        await set(ref(db, `rides/${currentRideId}/status`), "cancelled");
+      }
+      if (user) {
+        await set(ref(db, `users/${user.uid}/currentRideId`), null);
+      }
+    } catch (err) {
+      console.error("Error cancelling ride:", err);
+    }
+    setCurrentRideId(null);
+    setRideStatus(null);
+    setRideOTP("");
+    setSelectedDriver(null);
+    setDestination(null);
+    setDestinationAddress("");
+    setDistance(null);
+    setDuration(null);
+    setFare(0);
+    setSearchingDriver(false);
+    setShowArrivalCard(false);
+    setDriverETA(null);
+    setPickupSearchText("");
+    setDestinationSearchText("");
+    setPickupSuggestions([]);
+    setDestinationSuggestions([]);
+    getCurrentLocation();
+    Alert.alert("Ride Cancelled ❌", "Your ride request has been cancelled.");
+  };
+
   const getCurrentLocation = async () => {
     const { status } = await Location.requestForegroundPermissionsAsync();
 
@@ -91,37 +372,49 @@ export default function CustomerScreen() {
 
     setSource(currentCoords);
     setPickupAddress("📍 Current Location");
-    pickupRef.current?.setAddressText("📍 Current Location");
+    setPickupSearchText("📍 Current Location");
   };
 
-  const getNearbyDrivers = () => {
+  const getNearbyDrivers = (currentSource: any) => {
     const driversRef = ref(db, "drivers");
 
-    onValue(driversRef, (snapshot) => {
+    return onValue(driversRef, (snapshot) => {
       const data = snapshot.val();
 
-      if (data && source) {
+      if (data && currentSource) {
         const nearbyDrivers = Object.keys(data)
           .map((key) => {
             const driver = data[key];
-            const driverDistance = getDistance(
-              {
-                latitude: source.latitude,
-                longitude: source.longitude,
-              },
-              {
-                latitude: driver.latitude,
-                longitude: driver.longitude,
-              }
-            );
+            if (
+              !driver ||
+              typeof driver.latitude !== "number" ||
+              typeof driver.longitude !== "number"
+            ) {
+              return null;
+            }
+            try {
+              const driverDistance = getDistance(
+                {
+                  latitude: currentSource.latitude,
+                  longitude: currentSource.longitude,
+                },
+                {
+                  latitude: driver.latitude,
+                  longitude: driver.longitude,
+                }
+              );
 
-            return {
-              id: key,
-              ...driver,
-              distance: driverDistance / 1000,
-            };
+              return {
+                id: key,
+                ...driver,
+                distance: driverDistance / 1000,
+              };
+            } catch (err) {
+              console.error("Error calculating distance:", err);
+              return null;
+            }
           })
-          .filter((driver) => driver.isActive !== false && driver.distance <= 10)
+          .filter((d): d is any => d !== null && d.isActive !== false && d.distance <= MAX_DRIVER_RADIUS_KM)
           .sort((a, b) => a.distance - b.distance);
 
         setDrivers(nearbyDrivers);
@@ -140,31 +433,51 @@ export default function CustomerScreen() {
             });
           }
         }
+      } else {
+        setDrivers([]);
       }
     });
   };
 
   const bookRide = async () => {
-    if (distance && Number(distance) > 50) {
+    const rideDistanceKm = Number(distance || 0);
+
+    if (rideDistanceKm > MAX_RIDE_DISTANCE_KM) {
       Alert.alert(
         "Service Not Available",
-        "Our service is currently available only within the city limits."
+        `RideX currently supports bookings up to ${MAX_RIDE_DISTANCE_KM} km.`
       );
       return;
     }
 
-    if (isBookingForSomeoneElse && (!passengerName.trim() || !passengerPhone.trim())) {
-      Alert.alert("Passenger Info Required", "Please enter the passenger's name and phone number.");
-      return;
-    }
-
-    if (!drivers || drivers.length === 0) {
-      Alert.alert("No Driver Available 🚫", "No nearby drivers found");
-      return;
-    }
+    const availableDrivers = (drivers || []).filter(
+      (driver: any) => (driver.distance ?? 0) <= MAX_DRIVER_RADIUS_KM
+    );
 
     const generatedOTP = Math.floor(1000 + Math.random() * 9000);
-    const nearestDriver = drivers[0];
+    let nearestDriver = availableDrivers && availableDrivers.length > 0 ? availableDrivers[0] : null;
+
+    if (!nearestDriver && user) {
+      // Self-assignment simulation mode when no online drivers are found
+      const driverLat = (source?.latitude || 28.6139) + 0.005;
+      const driverLng = (source?.longitude || 77.2090) + 0.005;
+
+      nearestDriver = {
+        id: user.uid,
+        name: user.displayName || "Test Driver",
+        distance: 1.2,
+        latitude: driverLat,
+        longitude: driverLng,
+      };
+
+      // Register current user as active driver in the database at the current source location
+      await set(ref(db, `drivers/${user.uid}`), {
+        latitude: driverLat,
+        longitude: driverLng,
+        isActive: true,
+        updatedAt: Date.now(),
+      });
+    }
 
     if (!nearestDriver) {
       Alert.alert("No Driver Available 🚫");
@@ -177,7 +490,21 @@ export default function CustomerScreen() {
     setRideStatusTitle("Ride request sent");
     setRideStatusMessage("Your request is live and nearby active drivers are being notified.");
 
-    await set(ref(db, "rides/currentRide"), {
+    const newRideRef = push(ref(db, "rides"));
+    const rideId = newRideRef.key;
+    if (!rideId || !user) return;
+
+    setCurrentRideId(rideId);
+    await set(ref(db, `users/${user.uid}/currentRideId`), rideId);
+
+    // Set the driver's currentRideId so their driver screen immediately loads it
+    await set(ref(db, `drivers/${nearestDriver.id}/currentRideId`), rideId);
+
+    await set(newRideRef, {
+      id: rideId,
+      customerId: user.uid,
+      customerName: user.displayName || "RideX Customer",
+      customerPhone: "+91 88888 88888",
       source,
       destination,
       pickupAddress,
@@ -189,9 +516,6 @@ export default function CustomerScreen() {
       driverDistance: nearestDriver.distance.toFixed(1),
       status: "pending",
       createdAt: Date.now(),
-      bookingForSomeoneElse: isBookingForSomeoneElse,
-      passengerName: isBookingForSomeoneElse ? passengerName.trim() : "",
-      passengerPhone: isBookingForSomeoneElse ? passengerPhone.trim() : "",
       vehicleType: selectedVehicle,
       fare: fare,
     });
@@ -200,85 +524,10 @@ export default function CustomerScreen() {
     Alert.alert("Searching Driver 🚖", `Your OTP is ${generatedOTP}`);
   };
 
-  const listenForRideUpdates = () => {
-    const rideRef = ref(db, "rides/currentRide");
-
-    onValue(rideRef, (snapshot) => {
-      const data = snapshot.val();
-
-      if (data) {
-        const status = data.status || "pending";
-        setRideStatus(status);
-        setSource(data.source);
-        setDestination(data.destination);
-        setRideOTP(String(data.otp));
-        setPickupAddress(data.pickupAddress || "");
-        setDestinationAddress(data.destinationAddress || "");
-
-        if (status === "pending") {
-          setRideStatusTitle("Ride request sent");
-          setRideStatusMessage("Your request is live and the nearest active driver is being notified.");
-        } else if (status === "accepted") {
-          setRideStatusTitle("Driver accepted");
-          setRideStatusMessage("Your driver is on the way. Keep this screen open for live updates.");
-        } else if (status === "rejected") {
-          setRideStatusTitle("Ride rejected");
-          setRideStatusMessage("The driver declined the request. You can try again shortly.");
-        } else if (status === "started") {
-          setRideStatusTitle("Ride started");
-          setRideStatusMessage("Your trip has started. Enjoy the ride.");
-        } else if (status === "completed") {
-          setRideStatusTitle("Ride completed");
-          setRideStatusMessage("The trip has ended successfully.");
-        }
-
-        if (data.driverId) {
-          const driverLocRef = ref(db, `drivers/${data.driverId}`);
-          onValue(driverLocRef, (driverSnap) => {
-            const driverLocVal = driverSnap.val();
-            if (driverLocVal) {
-              setSelectedDriver({
-                id: data.driverId,
-                latitude: driverLocVal.latitude,
-                longitude: driverLocVal.longitude,
-                name: data.driverName || "Driver Partner",
-                vehicle: data.vehicleType ? data.vehicleType.toUpperCase() : "Car",
-              });
-            }
-          });
-        }
-
-        if (data.status === "pending") {
-          setSearchingDriver(true);
-        }
-
-        if (data.status === "accepted") {
-          setSearchingDriver(false);
-          setShowArrivalCard(true);
-        }
-
-        if (data.status === "rejected") {
-          setSearchingDriver(false);
-          Alert.alert("Ride Rejected ❌", "Driver rejected your ride");
-        }
-
-        if (data.status === "started") {
-          Alert.alert("Ride Started 🚕");
-        }
-
-        if (data.status === "completed") {
-          setShowArrivalCard(false);
-          setSearchingDriver(false);
-          Alert.alert("Ride Completed ✅");
-        }
-      }
-    });
-  };
-
   const listenForRideHistory = () => {
     const historyRef = ref(db, "rides/history");
 
-    onValue(historyRef, (snapshot) => {
+    return onValue(historyRef, (snapshot) => {
       const data = snapshot.val();
 
       if (data) {
@@ -302,6 +551,11 @@ export default function CustomerScreen() {
 
       <View style={styles.topGlow} />
       <View style={styles.bottomGlow} />
+
+      {/* Floating Debug Reset Button */}
+      <TouchableOpacity style={styles.resetDebugBtn} onPress={resetBookingState}>
+        <Text style={styles.resetDebugText}>Reset Console</Text>
+      </TouchableOpacity>
 
       {/* HOME TAB - Map & Ride Booking */}
       {activeTab === "home" && (
@@ -328,11 +582,36 @@ export default function CustomerScreen() {
               longitudeDelta: 0.05,
             }}
           >
-            {source && <Marker coordinate={source} pinColor="#22C55E" />}
+            {source && typeof source.latitude === "number" && typeof source.longitude === "number" && (
+              <Marker coordinate={source} pinColor="#22C55E" />
+            )}
 
-            {destination && <Marker coordinate={destination} pinColor="#EF4444" />}
+            {destination && typeof destination.latitude === "number" && typeof destination.longitude === "number" && (
+              <Marker coordinate={destination} pinColor="#EF4444" />
+            )}
 
-            {selectedDriver && (
+            {/* Render all nearby active drivers when no driver is selected */}
+            {!selectedDriver &&
+              drivers.map((driver: any) => {
+                if (typeof driver.latitude !== "number" || typeof driver.longitude !== "number") {
+                  return null;
+                }
+                return (
+                  <Marker
+                    key={driver.id}
+                    coordinate={{
+                      latitude: driver.latitude,
+                      longitude: driver.longitude,
+                    }}
+                  >
+                    <View style={styles.driverMarkerWrap}>
+                      <Text style={styles.driverMarkerEmoji}>🚖</Text>
+                    </View>
+                  </Marker>
+                );
+              })}
+
+            {selectedDriver && typeof selectedDriver.latitude === "number" && typeof selectedDriver.longitude === "number" && (
               <Marker
                 coordinate={{
                   latitude: selectedDriver.latitude,
@@ -345,7 +624,7 @@ export default function CustomerScreen() {
               </Marker>
             )}
 
-            {rideStatus === "accepted" && selectedDriver && source && (
+            {rideStatus === "accepted" && selectedDriver && typeof selectedDriver.latitude === "number" && typeof selectedDriver.longitude === "number" && source && (
               <MapViewDirections
                 origin={{
                   latitude: selectedDriver.latitude,
@@ -427,189 +706,82 @@ export default function CustomerScreen() {
                 </TouchableOpacity>
               </View>
 
-              <GooglePlacesAutocomplete
-                ref={pickupRef}
-                placeholder="Where to pick up from?"
-                fetchDetails={true}
-                minLength={1}
-                onFail={(error) => {
-                  Alert.alert("Places Error", JSON.stringify(error));
-                }}
-                debounce={300}
-                enablePoweredByContainer={false}
-                keyboardShouldPersistTaps="handled"
-                listViewDisplayed="auto"
-                predefinedPlaces={[
-                  {
-                    description: "📍 Use Current Location",
-                    geometry: {
-                      location: {
-                        latitude: source?.latitude || 0,
-                        longitude: source?.longitude || 0,
-                      },
-                    },
-                  },
-                ] as any}
-                textInputProps={{
-                  placeholderTextColor: "#94A3B8",
-                }}
-                onPress={(data, details = null) => {
-                  if (data.description === "📍 Use Current Location") {
-                    getCurrentLocation();
-                    return;
-                  }
-
-                  const location = details?.geometry.location;
-
-                  if (!location) {
-                    return;
-                  }
-
-                  setSource({
-                    latitude: location.lat,
-                    longitude: location.lng,
-                  });
-                  setPickupAddress(data.description);
-                }}
-                query={{
-                  key: GOOGLE_MAPS_APIKEY,
-                  language: "en",
-                }}
-                styles={{
-                  container: {
-                    flex: 0,
-                    marginBottom: 12,
-                  },
-                  textInput: {
-                    backgroundColor: "rgba(15, 23, 42, 0.94)",
-                    borderRadius: 18,
-                    height: 58,
-                    paddingHorizontal: 18,
-                    fontSize: 16,
-                    color: "white",
-                    fontWeight: "600",
-                    borderWidth: 1,
-                    borderColor: "rgba(148, 163, 184, 0.16)",
-                  },
-                  listView: {
-                    backgroundColor: "white",
-                    zIndex: 999,
-                    elevation: 999,
-                    borderRadius: 16,
-                    overflow: "hidden",
-                  },
-                }}
-              />
-
-              <GooglePlacesAutocomplete
-                placeholder="Where to?"
-                fetchDetails={true}
-                minLength={2}
-                debounce={300}
-                enablePoweredByContainer={false}
-                keyboardShouldPersistTaps="handled"
-                listViewDisplayed="auto"
-                textInputProps={{
-                  placeholderTextColor: "#94A3B8",
-                }}
-                onPress={(data, details = null) => {
-                  const location = details?.geometry.location;
-
-                  if (!location) {
-                    return;
-                  }
-
-                  setDestination({
-                    latitude: location.lat,
-                    longitude: location.lng,
-                  });
-                  setDestinationAddress(data.description);
-
-                  mapRef.current?.animateToRegion({
-                    latitude: location.lat,
-                    longitude: location.lng,
-                    latitudeDelta: 0.05,
-                    longitudeDelta: 0.05,
-                  });
-                }}
-                query={{
-                  key: GOOGLE_MAPS_APIKEY,
-                  language: "en",
-                  components: "country:in",
-                }}
-                styles={{
-                  container: {
-                    flex: 0,
-                    marginBottom: 12,
-                  },
-                  textInput: {
-                    backgroundColor: "rgba(15, 23, 42, 0.94)",
-                    borderRadius: 18,
-                    height: 58,
-                    paddingHorizontal: 18,
-                    fontSize: 16,
-                    color: "white",
-                    fontWeight: "600",
-                    borderWidth: 1,
-                    borderColor: "rgba(148, 163, 184, 0.16)",
-                  },
-                  listView: {
-                    backgroundColor: "white",
-                    zIndex: 999,
-                    elevation: 999,
-                    borderRadius: 16,
-                    overflow: "hidden",
-                  },
-                }}
-              />
-
-              {/* Passenger Selector Card */}
-              <View style={styles.passengerSectionCard}>
-                <Text style={styles.sectionInputLabel}>Who is riding?</Text>
-                <View style={styles.passengerToggleRow}>
-                  <TouchableOpacity
-                    style={[styles.passengerToggleBtn, !isBookingForSomeoneElse && styles.passengerToggleBtnActive]}
-                    onPress={() => setIsBookingForSomeoneElse(false)}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={[styles.passengerToggleLabel, !isBookingForSomeoneElse && styles.passengerToggleLabelActive]}>👤 Myself</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={[styles.passengerToggleBtn, isBookingForSomeoneElse && styles.passengerToggleBtnActive]}
-                    onPress={() => setIsBookingForSomeoneElse(true)}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={[styles.passengerToggleLabel, isBookingForSomeoneElse && styles.passengerToggleLabelActive]}>👥 Someone Else</Text>
-                  </TouchableOpacity>
-                </View>
-
-                {isBookingForSomeoneElse && (
-                  <View style={styles.passengerInputContainer}>
-                    <Text style={styles.passengerInputHeading}>Passenger Details</Text>
-                    <View style={styles.passengerInputGroup}>
-                      <Text style={styles.passengerInputLabel}>Full Name</Text>
-                      <TextInput
-                        style={styles.passengerTextInput}
-                        placeholder="Enter rider's name"
-                        placeholderTextColor="#94A3B8"
-                        value={passengerName}
-                        onChangeText={setPassengerName}
-                      />
-                    </View>
-                    <View style={[styles.passengerInputGroup, { marginTop: 12 }]}>
-                      <Text style={styles.passengerInputLabel}>Phone Number</Text>
-                      <TextInput
-                        style={styles.passengerTextInput}
-                        placeholder="Enter rider's phone number"
-                        placeholderTextColor="#94A3B8"
-                        keyboardType="phone-pad"
-                        value={passengerPhone}
-                        onChangeText={setPassengerPhone}
-                      />
-                    </View>
+              {/* Pickup Address Field with Real Google API (New) */}
+              <View style={styles.inputSearchWrapper}>
+                <TextInput
+                  style={styles.realAddressInput}
+                  placeholder="Where to pick up from?"
+                  placeholderTextColor="#94A3B8"
+                  value={pickupSearchText}
+                  onChangeText={handlePickupTextChange}
+                />
+                {loadingPickup && (
+                  <ActivityIndicator style={styles.inputSpinner} size="small" color="#2563EB" />
+                )}
+                {pickupSuggestions.length > 0 && (
+                  <View style={styles.liveSuggestionsDropdown}>
+                    <ScrollView keyboardShouldPersistTaps="handled">
+                      {pickupSuggestions.map((item) => (
+                        <TouchableOpacity
+                          key={item.placePrediction.placeId}
+                          style={styles.liveSuggestionRow}
+                          onPress={() => handlePlaceSelect(item.placePrediction.placeId, item.placePrediction.text.text, true)}
+                        >
+                          <Text style={styles.liveSuggestionLabel}>{item.placePrediction.text.text}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
                   </View>
                 )}
+              </View>
+
+              {/* Destination Address Field with Real Google API (New) */}
+              <View style={styles.inputSearchWrapper}>
+                <TextInput
+                  style={styles.realAddressInput}
+                  placeholder="Where to?"
+                  placeholderTextColor="#94A3B8"
+                  value={destinationSearchText}
+                  onChangeText={handleDestinationTextChange}
+                />
+                {loadingDestination && (
+                  <ActivityIndicator style={styles.inputSpinner} size="small" color="#2563EB" />
+                )}
+                {destinationSuggestions.length > 0 && (
+                  <View style={styles.liveSuggestionsDropdown}>
+                    <ScrollView keyboardShouldPersistTaps="handled">
+                      {destinationSuggestions.map((item) => (
+                        <TouchableOpacity
+                          key={item.placePrediction.placeId}
+                          style={styles.liveSuggestionRow}
+                          onPress={() => handlePlaceSelect(item.placePrediction.placeId, item.placePrediction.text.text, false)}
+                        >
+                          <Text style={styles.liveSuggestionLabel}>{item.placePrediction.text.text}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
+                  </View>
+                )}
+              </View>
+            </View>
+          )}
+
+          {destination && !rideStatus && (
+            <View style={styles.minimizedSearchHeader}>
+              <TouchableOpacity style={styles.miniBackBtn} onPress={() => {
+                setDestination(null);
+                setDestinationAddress("");
+                setDistance(null);
+              }}>
+                <Text style={styles.miniBackArrow}>←</Text>
+              </TouchableOpacity>
+              <View style={styles.miniRouteInfo}>
+                <Text style={styles.miniRouteText} numberOfLines={1}>
+                  🟢 {pickupAddress || "Current Location"}
+                </Text>
+                <Text style={styles.miniRouteText} numberOfLines={1}>
+                  🔴 {destinationAddress}
+                </Text>
               </View>
             </View>
           )}
@@ -618,6 +790,11 @@ export default function CustomerScreen() {
             <View style={styles.statusBanner}>
               <Text style={styles.statusBannerTitle}>{rideStatusTitle}</Text>
               <Text style={styles.statusBannerText}>{rideStatusMessage}</Text>
+              {(rideStatus === "completed" || rideStatus === "rejected") && (
+                <TouchableOpacity style={styles.bookNewRideBtn} onPress={resetBookingState}>
+                  <Text style={styles.bookNewRideBtnText}>Book New Ride</Text>
+                </TouchableOpacity>
+              )}
             </View>
           )}
 
@@ -625,10 +802,13 @@ export default function CustomerScreen() {
             <View style={styles.searchingCard}>
               <Text style={styles.searchingTitle}>Searching for the best driver</Text>
               <Text style={styles.searchingText}>Your request is live and the nearest active driver is being notified.</Text>
+              <TouchableOpacity style={styles.cancelRideBtn} onPress={cancelRideRequest}>
+                <Text style={styles.cancelRideBtnText}>Cancel Request</Text>
+              </TouchableOpacity>
             </View>
           )}
 
-          {rideOTP && (
+          {rideOTP && (rideStatus === "pending" || rideStatus === "accepted") && (
             <View style={styles.otpCard}>
               <Text style={styles.otpLabel}>Share OTP With Driver</Text>
               <Text style={styles.otpValue}>{rideOTP}</Text>
@@ -642,6 +822,9 @@ export default function CustomerScreen() {
               <Text style={styles.arrivalText}>Your ride will start soon.</Text>
               <Text style={styles.arrivalText}>Driver is on the way.</Text>
               {driverETA && <Text style={styles.arrivalEta}>ETA: {driverETA} mins</Text>}
+              <TouchableOpacity style={styles.cancelRideBtn} onPress={cancelRideRequest}>
+                <Text style={styles.cancelRideBtnText}>Cancel Ride</Text>
+              </TouchableOpacity>
             </View>
           )}
 
@@ -908,7 +1091,7 @@ const styles = StyleSheet.create({
     shadowRadius: 24,
     shadowOffset: { width: 0, height: 14 },
     elevation: 8,
-    overflow: "hidden",
+    overflow: "visible",
   },
   heroCardGlow: {
     position: "absolute",
@@ -1618,5 +1801,145 @@ const styles = StyleSheet.create({
     color: "#64748B",
     marginTop: 2,
     fontWeight: "600",
+  },
+  resetDebugBtn: {
+    position: "absolute",
+    top: 50,
+    right: 20,
+    backgroundColor: "rgba(15, 23, 42, 0.92)",
+    borderRadius: 16,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.1)",
+    zIndex: 9999,
+  },
+  resetDebugText: {
+    color: "#EF4444",
+    fontSize: 12,
+    fontWeight: "800",
+    letterSpacing: 0.5,
+  },
+  cancelRideBtn: {
+    backgroundColor: "#EF4444",
+    borderRadius: 16,
+    height: 44,
+    justifyContent: "center",
+    alignItems: "center",
+    marginTop: 12,
+    width: "100%",
+  },
+  cancelRideBtnText: {
+    color: "white",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  bookNewRideBtn: {
+    backgroundColor: "#2563EB",
+    borderRadius: 16,
+    height: 48,
+    justifyContent: "center",
+    alignItems: "center",
+    marginTop: 12,
+    width: "100%",
+    shadowColor: "#2563EB",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+    elevation: 4,
+  },
+  bookNewRideBtnText: {
+    color: "white",
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  minimizedSearchHeader: {
+    position: "absolute",
+    top: 50,
+    left: 20,
+    right: 20,
+    backgroundColor: "white",
+    borderRadius: 20,
+    padding: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "rgba(148, 163, 184, 0.16)",
+    shadowColor: "#0F172A",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.1,
+    shadowRadius: 16,
+    elevation: 6,
+    zIndex: 999,
+  },
+  miniBackBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#F1F5F9",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 12,
+  },
+  miniBackArrow: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: "#0F172A",
+  },
+  miniRouteInfo: {
+    flex: 1,
+    gap: 4,
+  },
+  miniRouteText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#334155",
+  },
+  realAddressInput: {
+    backgroundColor: "rgba(15, 23, 42, 0.94)",
+    borderRadius: 18,
+    height: 58,
+    paddingHorizontal: 18,
+    fontSize: 16,
+    color: "white",
+    fontWeight: "600",
+    borderWidth: 1,
+    borderColor: "rgba(148, 163, 184, 0.16)",
+  },
+  liveSuggestionsDropdown: {
+    backgroundColor: "white",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(148, 163, 184, 0.16)",
+    marginTop: 6,
+    shadowColor: "#0F172A",
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.1,
+    shadowRadius: 16,
+    elevation: 6,
+    zIndex: 9999,
+    maxHeight: 200,
+    overflow: "hidden",
+  },
+  liveSuggestionRow: {
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: "#F1F5F9",
+  },
+  liveSuggestionLabel: {
+    fontSize: 14,
+    color: "#334155",
+    fontWeight: "600",
+  },
+  inputSearchWrapper: {
+    position: "relative",
+    marginBottom: 12,
+    zIndex: 9999,
+  },
+  inputSpinner: {
+    position: "absolute",
+    right: 18,
+    top: 18,
   },
 });

@@ -23,11 +23,19 @@ export default function DriverScreen() {
   const user = getCurrentUser();
 
   const [location, setLocation] = useState<any>(null);
+  const [currentRideId, setCurrentRideId] = useState<string | null>(null);
   const [rideRequest, setRideRequest] = useState<any>(null);
   const [enteredOTP, setEnteredOTP] = useState("");
   const [lastRideId, setLastRideId] = useState("");
   const [isCompletingRide, setIsCompletingRide] = useState(false);
   const [isActive, setIsActive] = useState(true);
+
+  const trackingSubRef = useRef<any>(null);
+  const isActiveRef = useRef(isActive);
+
+  useEffect(() => {
+    isActiveRef.current = isActive;
+  }, [isActive]);
 
   useEffect(() => {
     if (!user) {
@@ -35,8 +43,49 @@ export default function DriverScreen() {
       return;
     }
     startTracking();
-    listenForRideRequests();
-  }, []);
+
+    return () => {
+      if (trackingSubRef.current) {
+        trackingSubRef.current.remove();
+      }
+    };
+  }, [user]);
+
+  // Listen for user's active ride ID from Firebase on mount
+  useEffect(() => {
+    if (!user) return;
+    const rideIdRef = ref(db, `drivers/${user.uid}/currentRideId`);
+    return onValue(rideIdRef, (snapshot) => {
+      const val = snapshot.val();
+      setCurrentRideId(val);
+    });
+  }, [user]);
+
+  // Listen to the unique active ride data
+  useEffect(() => {
+    if (!currentRideId) {
+      setRideRequest(null);
+      return;
+    }
+
+    const rideRef = ref(db, `rides/${currentRideId}`);
+    const unsubscribe = onValue(rideRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        setRideRequest(data);
+        if (data.status === "pending" && data.createdAt !== lastRideId) {
+          setLastRideId(data.createdAt);
+          Alert.alert("🚖 New Ride Request", "Customer booked a ride!");
+        }
+      } else {
+        setRideRequest(null);
+      }
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [currentRideId]);
 
   useEffect(() => {
     let interval: any;
@@ -127,7 +176,12 @@ export default function DriverScreen() {
       return;
     }
 
-    await Location.watchPositionAsync(
+    if (trackingSubRef.current) {
+      trackingSubRef.current.remove();
+      trackingSubRef.current = null;
+    }
+
+    trackingSubRef.current = await Location.watchPositionAsync(
       {
         accuracy: Location.Accuracy.BestForNavigation,
         timeInterval: 2000,
@@ -142,10 +196,10 @@ export default function DriverScreen() {
         setLocation(coords);
 
         if (user) {
-          await set(ref(db, `drivers/${user.uid}`), {
+          await update(ref(db, `drivers/${user.uid}`), {
             latitude: coords.latitude,
             longitude: coords.longitude,
-            isActive,
+            isActive: isActiveRef.current,
           });
         }
 
@@ -157,23 +211,6 @@ export default function DriverScreen() {
     );
   };
 
-  const listenForRideRequests = () => {
-    const rideRef = ref(db, "rides/currentRide");
-
-    onValue(rideRef, (snapshot) => {
-      const data = snapshot.val();
-
-      if (data) {
-        setRideRequest(data);
-
-        if (data.status === "pending" && data.createdAt !== lastRideId) {
-          setLastRideId(data.createdAt);
-          Alert.alert("🚖 New Ride Request", "Customer booked a ride!");
-        }
-      }
-    });
-  };
-
   const toggleAvailability = async () => {
     const nextState = !isActive;
     setIsActive(nextState);
@@ -181,7 +218,7 @@ export default function DriverScreen() {
     if (!user) return;
 
     if (location) {
-      await set(ref(db, `drivers/${user.uid}`), {
+      await update(ref(db, `drivers/${user.uid}`), {
         latitude: location.latitude,
         longitude: location.longitude,
         isActive: nextState,
@@ -192,9 +229,9 @@ export default function DriverScreen() {
   };
 
   const acceptRide = async () => {
-    if (!rideRequest || !user) return;
+    if (!rideRequest || !user || !currentRideId) return;
 
-    await set(ref(db, "rides/currentRide"), {
+    await set(ref(db, `rides/${currentRideId}`), {
       ...rideRequest,
       status: "accepted",
       driverId: user.uid,
@@ -204,10 +241,10 @@ export default function DriverScreen() {
   };
 
   const startRide = async () => {
-    if (!rideRequest) return;
+    if (!rideRequest || !currentRideId) return;
 
     if (enteredOTP === String(rideRequest?.otp)) {
-      await set(ref(db, "rides/currentRide"), {
+      await set(ref(db, `rides/${currentRideId}`), {
         ...rideRequest,
         status: "started",
       });
@@ -218,7 +255,7 @@ export default function DriverScreen() {
   };
 
   const completeRide = async () => {
-    if (!rideRequest || isCompletingRide || rideRequest.status !== "started") return;
+    if (!rideRequest || isCompletingRide || rideRequest.status !== "started" || !currentRideId || !user) return;
 
     setIsCompletingRide(true);
 
@@ -232,11 +269,13 @@ export default function DriverScreen() {
         completedAt,
       });
 
-      await set(ref(db, "rides/currentRide"), {
+      await set(ref(db, `rides/${currentRideId}`), {
         ...rideRequest,
         status: "completed",
         completedAt,
       });
+
+      await set(ref(db, `drivers/${user.uid}/currentRideId`), null);
 
       setRideRequest((currentRide: any) =>
         currentRide ? { ...currentRide, status: "completed", completedAt } : currentRide
@@ -249,12 +288,13 @@ export default function DriverScreen() {
   };
 
   const rejectRide = async () => {
-    if (!rideRequest) return;
+    if (!rideRequest || !currentRideId || !user) return;
 
-    await set(ref(db, "rides/currentRide"), {
+    await set(ref(db, `rides/${currentRideId}`), {
       ...rideRequest,
       status: "rejected",
     });
+    await set(ref(db, `drivers/${user.uid}/currentRideId`), null);
     Alert.alert("Ride Rejected");
   };
 

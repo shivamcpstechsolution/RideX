@@ -1,6 +1,7 @@
 import { initializeApp } from "firebase/app";
-import { browserSessionPersistence, getAuth, setPersistence } from "firebase/auth";
+import { getAuth, initializeAuth, inMemoryPersistence, browserSessionPersistence } from "firebase/auth";
 import { getDatabase } from "firebase/database";
+import { Platform } from "react-native";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBzGM7ugM4WVLYbaoZ7e7PcyKpSSJhRWgo",
@@ -13,10 +14,24 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
-export const auth = getAuth(app);
+
+// Initialize Firebase Auth with platform-appropriate settings
+export const auth = Platform.OS === "web"
+  ? (() => {
+      const a = getAuth(app);
+      return a;
+    })()
+  : initializeAuth(app, {
+      persistence: inMemoryPersistence,
+    });
+
 export const db = getDatabase(app);
 
 // Set session persistence for security
-setPersistence(auth, browserSessionPersistence).catch((error) => {
-  console.warn("Auth persistence error:", error.message);
-});
+if (Platform.OS === "web") {
+  import("firebase/auth").then(({ setPersistence, browserSessionPersistence }) => {
+    setPersistence(auth, browserSessionPersistence).catch((error) => {
+      console.warn("Auth persistence error:", error.message);
+    });
+  });
+}

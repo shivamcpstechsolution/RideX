@@ -1,6 +1,6 @@
 import { router } from "expo-router";
 import { User } from "firebase/auth";
-import { onValue, ref, update } from "firebase/database";
+import { onValue, ref, update, set } from "firebase/database";
 import { useEffect, useRef, useState } from "react";
 import {
     ActivityIndicator,
@@ -106,6 +106,78 @@ export default function HomeScreen() {
   const [earnings] = useState<number>(1450);
   const [tripsCount] = useState<number>(4);
 
+  const driverLocationSubRef = useRef<any>(null);
+
+  // Driver Location & Availability tracking
+  useEffect(() => {
+    if (userRole !== "driver" || !currentUser) {
+      if (driverLocationSubRef.current) {
+        driverLocationSubRef.current.remove();
+        driverLocationSubRef.current = null;
+      }
+      return;
+    }
+
+    const startTrackingDriver = async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== "granted") {
+          console.warn("Location permission not granted for driver tracking");
+          return;
+        }
+
+        if (driverLocationSubRef.current) {
+          driverLocationSubRef.current.remove();
+          driverLocationSubRef.current = null;
+        }
+
+        if (isOnline) {
+          driverLocationSubRef.current = await Location.watchPositionAsync(
+            {
+              accuracy: Location.Accuracy.BestForNavigation,
+              timeInterval: 3000,
+              distanceInterval: 5,
+            },
+            async (loc) => {
+              const coords = {
+                latitude: loc.coords.latitude,
+                longitude: loc.coords.longitude,
+              };
+
+              setMapRegion((prevRegion: any) => ({
+                ...prevRegion,
+                latitude: coords.latitude,
+                longitude: coords.longitude,
+              }));
+
+              await set(ref(db, `drivers/${currentUser.uid}`), {
+                latitude: coords.latitude,
+                longitude: coords.longitude,
+                isActive: true,
+                updatedAt: Date.now(),
+              });
+            }
+          );
+        } else {
+          await update(ref(db, `drivers/${currentUser.uid}`), {
+            isActive: false,
+          });
+        }
+      } catch (err) {
+        console.error("Error tracking driver location:", err);
+      }
+    };
+
+    startTrackingDriver();
+
+    return () => {
+      if (driverLocationSubRef.current) {
+        driverLocationSubRef.current.remove();
+        driverLocationSubRef.current = null;
+      }
+    };
+  }, [userRole, isOnline, currentUser]);
+
   useEffect(() => {
     const unsubscribe = onAuthChange((user) => {
       setCurrentUser(user);
@@ -129,22 +201,39 @@ export default function HomeScreen() {
     // Get User's Current Location for Map
     getUserLocation();
 
-    // Listen for current active ride
-    const currentRideRef = ref(db, "rides/currentRide");
-    const unsubscribeCurrentRide = onValue(currentRideRef, (snapshot) => {
+    // Listen for current active ride or incoming requests
+    const ridesRef = ref(db, "rides");
+    const unsubscribeCurrentRide = onValue(ridesRef, (snapshot) => {
       const data = snapshot.val();
-      
-      // Update active ride for rider view
-      if (data && ["pending", "accepted", "started"].includes(data.status)) {
-        setActiveRide(data);
-      } else {
+      if (!data) {
         setActiveRide(null);
+        setIncomingRequests([]);
+        return;
       }
 
       // Update incoming ride request for online driver
-      if (data && data.status === "pending") {
-        setIncomingRequests([data]);
+      if (userRole === "driver") {
+        const pendingForMe = Object.keys(data)
+          .map((key) => ({ id: key, ...data[key] }))
+          .filter((ride) => ride.driverId === currentUser.uid && ride.status === "pending");
+        setIncomingRequests(pendingForMe);
+        setActiveRide(null);
       } else {
+        // Update active ride for rider view
+        const userRideIdRef = ref(db, `users/${currentUser.uid}/currentRideId`);
+        onValue(userRideIdRef, (rideIdSnap) => {
+          const rideId = rideIdSnap.val();
+          if (rideId && data[rideId]) {
+            const rideDetails = data[rideId];
+            if (["pending", "accepted", "started"].includes(rideDetails.status)) {
+              setActiveRide({ id: rideId, ...rideDetails });
+            } else {
+              setActiveRide(null);
+            }
+          } else {
+            setActiveRide(null);
+          }
+        }, { onlyOnce: true });
         setIncomingRequests([]);
       }
     });
@@ -203,6 +292,11 @@ export default function HomeScreen() {
   const handleSignOut = async () => {
     setSigningOut(true);
     try {
+      if (userRole === "driver" && currentUser) {
+        await update(ref(db, `drivers/${currentUser.uid}`), {
+          isActive: false,
+        });
+      }
       await logoutUser();
     } catch (error) {
       console.error("Signout error:", error);
@@ -214,16 +308,28 @@ export default function HomeScreen() {
   const handleAcceptTrip = async (trip: any) => {
     if (!currentUser) return;
     try {
-      await update(ref(db, "rides/currentRide"), {
+      await update(ref(db, `rides/${trip.id}`), {
         status: "accepted",
         driverId: currentUser.uid,
         driverName: currentUser.displayName || "RideX Driver",
         driverPhone: "+91 99999 99999",
       });
+      await set(ref(db, `drivers/${currentUser.uid}/currentRideId`), trip.id);
       // Redirect to the active Driver screen layout
       router.push("/driver");
     } catch (err) {
       console.error("Accept trip error:", err);
+    }
+  };
+
+  const handleDeclineTrip = async (trip: any) => {
+    try {
+      await update(ref(db, `rides/${trip.id}`), {
+        status: "rejected",
+      });
+      setIncomingRequests([]);
+    } catch (err) {
+      console.error("Decline trip error:", err);
     }
   };
 
@@ -383,7 +489,7 @@ export default function HomeScreen() {
                     <View style={styles.requestActionRow}>
                       <TouchableOpacity 
                         style={styles.declineButton}
-                        onPress={() => setIncomingRequests([])}
+                        onPress={() => handleDeclineTrip(request)}
                       >
                         <Text style={styles.declineButtonText}>Decline</Text>
                       </TouchableOpacity>
