@@ -1,7 +1,10 @@
-import { router } from "expo-router";
-import { useState } from "react";
+import { router, useLocalSearchParams } from "expo-router";
+import { useEffect, useRef, useState } from "react";
 import {
     ActivityIndicator,
+    Alert,
+    Animated,
+    Easing,
     Image,
     KeyboardAvoidingView,
     Platform,
@@ -14,20 +17,79 @@ import {
     TouchableOpacity,
     View,
 } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { signupUser } from "../services/authService";
 
 export default function SignupScreen() {
+  const params = useLocalSearchParams();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const [signupMethod, setSignupMethod] = useState<"phone" | "email">("phone");
   const [password, setPassword] = useState("");
-  const [role, setRole] = useState<"rider" | "driver">("rider");
+  const [role, setRole] = useState<"rider" | "driver">((params.role as "rider" | "driver") || "rider");
+  const [showRoleMenu, setShowRoleMenu] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
+
+  const rotateAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.loop(
+      Animated.timing(rotateAnim, {
+        toValue: 1,
+        duration: 40000, // 40 seconds per rotation
+        easing: Easing.linear,
+        useNativeDriver: true,
+      })
+    ).start();
+  }, []);
+
+  const spin = rotateAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ["0deg", "360deg"],
+  });
+
+  useEffect(() => {
+    if (params.role === "rider" || params.role === "driver") {
+      setRole(params.role);
+    }
+  }, [params.role]);
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
 
   const handleSignup = async () => {
-    if (!name || !email || !password) {
-      setErrorMessage("Please fill in all fields");
+    let targetEmail = "";
+
+    if (!name) {
+      setErrorMessage("Please enter your name");
+      setValidationErrors([]);
+      return;
+    }
+
+    if (signupMethod === "phone") {
+      if (!phone) {
+        setErrorMessage("Please enter your phone number");
+        setValidationErrors([]);
+        return;
+      }
+      const cleanPhone = phone.replace(/[^0-9]/g, "");
+      if (cleanPhone.length < 10) {
+        setErrorMessage("Please enter a valid 10-digit phone number");
+        setValidationErrors([]);
+        return;
+      }
+      targetEmail = `${cleanPhone}@ridex.com`;
+    } else {
+      if (!email) {
+        setErrorMessage("Please enter your email address");
+        setValidationErrors([]);
+        return;
+      }
+      targetEmail = email;
+    }
+
+    if (!password) {
+      setErrorMessage("Please enter your password");
       setValidationErrors([]);
       return;
     }
@@ -37,7 +99,7 @@ export default function SignupScreen() {
     setLoading(true);
 
     try {
-      const response = await signupUser(email, password, name, role);
+      const response = await signupUser(targetEmail, password, name, role);
 
       if (response.success) {
         // Redirect to portal dashboard
@@ -63,16 +125,86 @@ export default function SignupScreen() {
     >
       <StatusBar barStyle="dark-content" backgroundColor="#F8FAFC" />
 
+      {/* Top Left Menu Selector (3 lines / hamburger menu) */}
+      <TouchableOpacity
+        style={styles.topLeftMenuBtn}
+        onPress={() => setShowRoleMenu(!showRoleMenu)}
+        activeOpacity={0.7}
+      >
+        <Ionicons name={showRoleMenu ? "close" : "menu"} size={24} color="#0F172A" />
+      </TouchableOpacity>
+
+      {showRoleMenu && (
+        <View style={styles.roleDropdown}>
+          <TouchableOpacity
+            style={[styles.roleDropdownItem, role === "rider" && styles.roleDropdownItemActiveRider]}
+            onPress={() => {
+              setRole("rider");
+              setShowRoleMenu(false);
+              setErrorMessage("");
+            }}
+            activeOpacity={0.85}
+          >
+            <View style={[styles.roleDropdownIcon, { backgroundColor: role === "rider" ? "#DBEAFE" : "#F1F5F9" }]}>
+              <Text style={styles.roleDropdownEmoji}>🚖</Text>
+            </View>
+            <View style={styles.roleDropdownTextGroup}>
+              <Text style={[styles.roleDropdownTitle, role === "rider" && styles.roleDropdownTitleActive]}>
+                Rider Account
+              </Text>
+              <Text style={styles.roleDropdownDesc}>Request standard & luxury rides</Text>
+            </View>
+            {role === "rider" && (
+              <Ionicons name="checkmark-circle" size={18} color="#2563EB" />
+            )}
+          </TouchableOpacity>
+
+          <View style={styles.roleDropdownDivider} />
+
+          <TouchableOpacity
+            style={[styles.roleDropdownItem, role === "driver" && styles.roleDropdownItemActiveDriver]}
+            onPress={() => {
+              setRole("driver");
+              setShowRoleMenu(false);
+              setErrorMessage("");
+            }}
+            activeOpacity={0.85}
+          >
+            <View style={[styles.roleDropdownIcon, { backgroundColor: role === "driver" ? "#D1FAE5" : "#F1F5F9" }]}>
+              <Text style={styles.roleDropdownEmoji}>🏎️</Text>
+            </View>
+            <View style={styles.roleDropdownTextGroup}>
+              <Text style={[styles.roleDropdownTitle, role === "driver" && styles.roleDropdownTitleActive]}>
+                Driver Partner
+              </Text>
+              <Text style={styles.roleDropdownDesc}>Go online & earn money</Text>
+            </View>
+            {role === "driver" && (
+              <Ionicons name="checkmark-circle" size={18} color="#10B981" />
+            )}
+          </TouchableOpacity>
+        </View>
+      )}
+
       {/* Decorative Glow Blobs */}
       <View style={styles.glowBlobOne} />
       <View style={styles.glowBlobTwo} />
 
+      {/* Animated Rotating Background Logo Watermark (Large above/behind the form) */}
+      <Animated.Image
+        source={require("../assets/images/logg.png")}
+        style={[styles.bgLogoWatermark, { transform: [{ rotate: spin }] }]}
+        resizeMode="contain"
+      />
+
       <ScrollView 
+        style={styles.scrollView}
         contentContainerStyle={styles.scrollContent} 
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        <View style={styles.card}>
+        <View style={[styles.card, { overflow: "hidden" }]}>
+
           <View style={styles.header}>
             <View style={styles.logoContainer}>
               <View style={styles.logoShell}>
@@ -87,8 +219,8 @@ export default function SignupScreen() {
             </View>
             <Text style={styles.eyebrow}>Create account</Text>
             <Text style={styles.title}>Join RideX</Text>
-            <Text style={styles.subtitle}>Sign up to request trips or register as a driver partner.</Text>
           </View>
+
 
           {errorMessage ? (
             <View style={styles.errorContainer}>
@@ -105,53 +237,6 @@ export default function SignupScreen() {
             </View>
           ) : null}
 
-          {/* Premium Stacked Selection Cards */}
-          <View style={styles.roleContainer}>
-            <Text style={styles.roleLabel}>I want to sign up as a:</Text>
-            
-            <TouchableOpacity
-              style={[
-                styles.roleCard,
-                role === "rider" ? styles.roleCardActiveRider : styles.roleCardInactive
-              ]}
-              onPress={() => setRole("rider")}
-              activeOpacity={0.9}
-              disabled={loading}
-            >
-              <View style={[styles.roleIconCircle, { backgroundColor: role === "rider" ? "#DBEAFE" : "#F1F5F9" }]}>
-                <Text style={styles.roleEmojiText}>🚖</Text>
-              </View>
-              <View style={styles.roleTextWrapper}>
-                <Text style={styles.roleTitleText}>Rider Account</Text>
-                <Text style={styles.roleDescText}>Request standard & luxury rides</Text>
-              </View>
-              <View style={[styles.radioCircle, role === "rider" && styles.radioActiveRider]}>
-                {role === "rider" && <View style={styles.radioDotRider} />}
-              </View>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[
-                styles.roleCard,
-                role === "driver" ? styles.roleCardActiveDriver : styles.roleCardInactive
-              ]}
-              onPress={() => setRole("driver")}
-              activeOpacity={0.9}
-              disabled={loading}
-            >
-              <View style={[styles.roleIconCircle, { backgroundColor: role === "driver" ? "#D1FAE5" : "#F1F5F9" }]}>
-                <Text style={styles.roleEmojiText}>🏎️</Text>
-              </View>
-              <View style={styles.roleTextWrapper}>
-                <Text style={styles.roleTitleText}>Driver Partner</Text>
-                <Text style={styles.roleDescText}>Go online, accept requests & earn</Text>
-              </View>
-              <View style={[styles.radioCircle, role === "driver" && styles.radioActiveDriver]}>
-                {role === "driver" && <View style={styles.radioDotDriver} />}
-              </View>
-            </TouchableOpacity>
-          </View>
-
           <View style={styles.formGroup}>
             <Text style={styles.label}>Full Name</Text>
             <TextInput
@@ -164,19 +249,63 @@ export default function SignupScreen() {
             />
           </View>
 
-          <View style={styles.formGroup}>
-            <Text style={styles.label}>Email Address</Text>
-            <TextInput
-              style={[styles.input, loading && styles.disabledInput]}
-              placeholder="name@example.com"
-              placeholderTextColor="#94A3B8"
-              value={email}
-              onChangeText={setEmail}
-              autoCapitalize="none"
-              keyboardType="email-address"
-              editable={!loading}
-            />
+          {/* Method Switcher */}
+          <View style={styles.methodTabContainer}>
+            <TouchableOpacity
+              style={[styles.methodTab, signupMethod === "phone" && styles.methodTabActive]}
+              onPress={() => { setErrorMessage(""); setSignupMethod("phone"); }}
+              disabled={loading}
+              activeOpacity={0.8}
+            >
+              <Text style={[styles.methodTabText, signupMethod === "phone" && styles.methodTabTextActive]}>
+                📞 Phone Number
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.methodTab, signupMethod === "email" && styles.methodTabActive]}
+              onPress={() => { setErrorMessage(""); setSignupMethod("email"); }}
+              disabled={loading}
+              activeOpacity={0.8}
+            >
+              <Text style={[styles.methodTabText, signupMethod === "email" && styles.methodTabTextActive]}>
+                ✉️ Email Address
+              </Text>
+            </TouchableOpacity>
           </View>
+
+          {signupMethod === "phone" ? (
+            <View style={styles.formGroup}>
+              <Text style={styles.label}>Phone Number</Text>
+              <View style={styles.phoneInputContainer}>
+                <Text style={styles.phonePrefix}>+91</Text>
+                <TextInput
+                  style={[styles.input, styles.phoneInput, loading && styles.disabledInput]}
+                  placeholder="98765 43210"
+                  placeholderTextColor="#94A3B8"
+                  value={phone}
+                  onChangeText={setPhone}
+                  keyboardType="number-pad"
+                  maxLength={10}
+                  editable={!loading}
+                />
+              </View>
+            </View>
+          ) : (
+            <View style={styles.formGroup}>
+              <Text style={styles.label}>Email Address</Text>
+              <TextInput
+                style={[styles.input, loading && styles.disabledInput]}
+                placeholder="name@example.com"
+                placeholderTextColor="#94A3B8"
+                value={email}
+                onChangeText={setEmail}
+                autoCapitalize="none"
+                keyboardType="email-address"
+                editable={!loading}
+              />
+            </View>
+          )}
 
           <View style={styles.formGroup}>
             <Text style={styles.label}>Password</Text>
@@ -203,9 +332,8 @@ export default function SignupScreen() {
               <Text style={styles.primaryButtonText}>Create Account</Text>
             )}
           </TouchableOpacity>
-
           <Pressable 
-            onPress={() => !loading && router.push("/login")}
+            onPress={() => !loading && router.push({ pathname: "/login", params: { role } })}
             disabled={loading}
             style={({ pressed }) => [
               styles.switchButton,
@@ -248,7 +376,9 @@ const styles = StyleSheet.create({
   scrollContent: {
     flexGrow: 1,
     justifyContent: "center",
-    padding: 24,
+    paddingHorizontal: 24,
+    paddingTop: 24,
+    paddingBottom: 80,
   },
   card: {
     backgroundColor: "rgba(255, 255, 255, 0.85)", // Glassmorphic Translucent White
@@ -492,5 +622,155 @@ const styles = StyleSheet.create({
   switchTextBold: {
     color: "#10B981",
     fontWeight: "800",
+  },
+  methodTabContainer: {
+    flexDirection: "row",
+    backgroundColor: "#F1F5F9",
+    borderRadius: 14,
+    padding: 4,
+    marginBottom: 20,
+    width: "100%",
+  },
+  methodTab: {
+    flex: 1,
+    paddingVertical: 10,
+    alignItems: "center",
+    borderRadius: 10,
+  },
+  methodTabActive: {
+    backgroundColor: "#FFFFFF",
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
+  },
+  methodTabText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#64748B",
+  },
+  methodTabTextActive: {
+    color: "#0F172A",
+  },
+  phoneInputContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1.5,
+    borderColor: "#E2E8F0",
+    borderRadius: 16,
+    height: 52,
+    paddingHorizontal: 16,
+  },
+  phonePrefix: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#0F172A",
+    marginRight: 10,
+  },
+  phoneInput: {
+    flex: 1,
+    borderWidth: 0,
+    height: "100%",
+    paddingHorizontal: 0,
+    marginVertical: 0,
+    backgroundColor: "transparent",
+  },
+  topLeftMenuBtn: {
+    position: "absolute",
+    top: 55,
+    left: 20,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1.5,
+    borderColor: "#E2E8F0",
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.06,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 3,
+    zIndex: 999,
+  },
+  roleDropdown: {
+    position: "absolute",
+    top: 110,
+    left: 20,
+    width: 280,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 24,
+    borderWidth: 1.5,
+    borderColor: "#E2E8F0",
+    padding: 8,
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.12,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 8,
+    zIndex: 1000,
+  },
+  roleDropdownItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 12,
+    borderRadius: 16,
+    gap: 12,
+  },
+  roleDropdownItemActiveRider: {
+    backgroundColor: "rgba(37, 99, 235, 0.03)",
+  },
+  roleDropdownItemActiveDriver: {
+    backgroundColor: "rgba(16, 185, 129, 0.03)",
+  },
+  roleDropdownIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  roleDropdownEmoji: {
+    fontSize: 18,
+  },
+  roleDropdownTextGroup: {
+    flex: 1,
+  },
+  roleDropdownTitle: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: "#0F172A",
+  },
+  roleDropdownTitleActive: {
+    color: "#0F172A",
+  },
+  roleDropdownDesc: {
+    fontSize: 11,
+    color: "#64748B",
+    marginTop: 2,
+    fontWeight: "600",
+  },
+  roleDropdownDivider: {
+    height: 1,
+    backgroundColor: "#F1F5F9",
+    marginHorizontal: 8,
+    marginVertical: 4,
+  },
+  bgLogoWatermark: {
+    position: "absolute",
+    width: 480,
+    height: 480,
+    top: 50,
+    left: "50%",
+    marginLeft: -240,
+    opacity: 0.25,
+    tintColor: "#CBD5E1",
+  },
+  scrollView: {
+    flex: 1,
+    backgroundColor: "transparent",
   },
 });

@@ -4,6 +4,7 @@ import { onValue, ref, update, set } from "firebase/database";
 import { useEffect, useRef, useState } from "react";
 import {
     ActivityIndicator,
+    Alert,
     Dimensions,
     ScrollView,
     StatusBar,
@@ -193,9 +194,22 @@ export default function HomeScreen() {
   useEffect(() => {
     if (!currentUser) return;
 
+    let unsubscribeDriverRideId: (() => void) | null = null;
+
     // Resolve Database Role
     getUserRole(currentUser.uid).then((role) => {
-      setUserRole(role || "rider");
+      const resolvedRole = role || "rider";
+      setUserRole(resolvedRole);
+
+      if (resolvedRole === "driver") {
+        const driverRideIdRef = ref(db, `drivers/${currentUser.uid}/currentRideId`);
+        unsubscribeDriverRideId = onValue(driverRideIdRef, (snap) => {
+          const rideId = snap.val();
+          if (rideId) {
+            router.push("/driver");
+          }
+        });
+      }
     });
 
     // Get User's Current Location for Map
@@ -259,6 +273,9 @@ export default function HomeScreen() {
     return () => {
       unsubscribeCurrentRide();
       unsubscribeHistory();
+      if (unsubscribeDriverRideId) {
+        unsubscribeDriverRideId();
+      }
     };
   }, [currentUser]);
 
@@ -538,7 +555,7 @@ export default function HomeScreen() {
               <View style={styles.liveIndicatorDot} />
             </View>
 
-            <View style={styles.profileSection}>
+             <View style={styles.profileSection}>
               <View style={styles.avatarCircle}>
                 <Text style={styles.avatarText}>
                   {(currentUser?.displayName || currentUser?.email || "U")[0].toUpperCase()}
@@ -907,6 +924,24 @@ export default function HomeScreen() {
               <Text style={styles.accountPhone}>Authenticated Safely</Text>
             </View>
           </View>
+
+          <TouchableOpacity 
+            style={[styles.accountMenuItem, { borderColor: "#3b82f6", backgroundColor: "#EFF6FF" }]} 
+            activeOpacity={0.7}
+            onPress={async () => {
+              const newRole = userRole === "rider" ? "driver" : "rider";
+              setUserRole(newRole);
+              if (currentUser) {
+                await update(ref(db, `users/${currentUser.uid}`), { role: newRole });
+                Alert.alert("Role Switched 🔄", `Successfully switched to ${newRole === "rider" ? "Rider Account" : "Driver Partner Mode"}`);
+              }
+            }}
+          >
+            <Text style={[styles.accountMenuText, { color: "#2563eb", fontWeight: "800" }]}>
+              {userRole === "rider" ? "🏎️ Switch to Driver Partner" : "🚖 Switch to Rider Account"}
+            </Text>
+            <Text style={[styles.accountMenuArrow, { color: "#2563eb" }]}>→</Text>
+          </TouchableOpacity>
 
           <TouchableOpacity style={styles.accountMenuItem} activeOpacity={0.7}>
             <Text style={styles.accountMenuText}>⚙️ Settings</Text>

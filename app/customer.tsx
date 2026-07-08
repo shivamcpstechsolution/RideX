@@ -8,6 +8,7 @@ import { getDistance } from "geolib";
 import MapView, { Marker } from "react-native-maps";
 import MapViewDirections from "react-native-maps-directions";
 
+import { Ionicons } from "@expo/vector-icons";
 import { db } from "../firebaseConfig";
 import { getCurrentUser, logoutUser } from "../services/authService";
 
@@ -42,6 +43,7 @@ export default function CustomerScreen() {
   const [rideOTP, setRideOTP] = useState("");
   const [activeTab, setActiveTab] = useState<"home" | "services" | "activity" | "account">("home");
   const [rideHistory, setRideHistory] = useState<any[]>([]);
+  const [driverMessage, setDriverMessage] = useState<string | null>(null);
 
   const [pickupSearchText, setPickupSearchText] = useState("");
   const [destinationSearchText, setDestinationSearchText] = useState("");
@@ -211,6 +213,13 @@ export default function CustomerScreen() {
         setPickupAddress(data.pickupAddress || "");
         setDestinationAddress(data.destinationAddress || "");
 
+        // Listen to driver messages
+        if (data.driverMessage) {
+          setDriverMessage(data.driverMessage);
+        } else {
+          setDriverMessage(null);
+        }
+
         if (status === "pending") {
           setRideStatusTitle("Ride request sent");
           setRideStatusMessage("Your request is live and the nearest active driver is being notified.");
@@ -252,6 +261,7 @@ export default function CustomerScreen() {
         setRideStatus(null);
         setRideOTP("");
         setSelectedDriver(null);
+        setDriverMessage(null);
       }
     });
 
@@ -310,6 +320,7 @@ export default function CustomerScreen() {
     setRideStatus(null);
     setRideOTP("");
     setSelectedDriver(null);
+    setDriverMessage(null);
     setDestination(null);
     setDestinationAddress("");
     setDistance(null);
@@ -340,6 +351,7 @@ export default function CustomerScreen() {
     setRideStatus(null);
     setRideOTP("");
     setSelectedDriver(null);
+    setDriverMessage(null);
     setDestination(null);
     setDestinationAddress("");
     setDistance(null);
@@ -414,7 +426,7 @@ export default function CustomerScreen() {
               return null;
             }
           })
-          .filter((d): d is any => d !== null && d.isActive !== false && d.distance <= MAX_DRIVER_RADIUS_KM)
+          .filter((d): d is any => d !== null && d.isActive !== false)
           .sort((a, b) => a.distance - b.distance);
 
         setDrivers(nearbyDrivers);
@@ -456,6 +468,11 @@ export default function CustomerScreen() {
 
     const generatedOTP = Math.floor(1000 + Math.random() * 9000);
     let nearestDriver = availableDrivers && availableDrivers.length > 0 ? availableDrivers[0] : null;
+
+    // Robust testing fallback: If no driver is within 10km, but a driver is online in Firebase, assign it to them!
+    if (!nearestDriver && drivers && drivers.length > 0) {
+      nearestDriver = drivers[0];
+    }
 
     if (!nearestDriver && user) {
       // Self-assignment simulation mode when no online drivers are found
@@ -521,7 +538,7 @@ export default function CustomerScreen() {
     });
 
     setRideStatus("pending");
-    Alert.alert("Searching Driver 🚖", `Your OTP is ${generatedOTP}`);
+    Alert.alert("Searching Driver 🚖", "We are connecting you to the nearest active driver.");
   };
 
   const listenForRideHistory = () => {
@@ -583,11 +600,19 @@ export default function CustomerScreen() {
             }}
           >
             {source && typeof source.latitude === "number" && typeof source.longitude === "number" && (
-              <Marker coordinate={source} pinColor="#22C55E" />
+              <Marker coordinate={source} anchor={{ x: 0.5, y: 0.5 }}>
+                <View style={styles.uberPickupMarkerOuter}>
+                  <View style={styles.uberPickupMarkerInner} />
+                </View>
+              </Marker>
             )}
 
             {destination && typeof destination.latitude === "number" && typeof destination.longitude === "number" && (
-              <Marker coordinate={destination} pinColor="#EF4444" />
+              <Marker coordinate={destination} anchor={{ x: 0.5, y: 0.5 }}>
+                <View style={styles.uberDropoffMarkerOuter}>
+                  <View style={styles.uberDropoffMarkerInner} />
+                </View>
+              </Marker>
             )}
 
             {/* Render all nearby active drivers when no driver is selected */}
@@ -661,7 +686,7 @@ export default function CustomerScreen() {
             )}
           </MapView>
 
-          {rideStatus !== "pending" && rideStatus !== "accepted" && rideStatus !== "started" && (
+          {rideStatus !== "pending" && rideStatus !== "accepted" && rideStatus !== "started" && !destination && (
             <View style={styles.searchContainer}>
               <View style={styles.heroCard}>
                 <View style={styles.heroCardGlow} />
@@ -786,6 +811,15 @@ export default function CustomerScreen() {
             </View>
           )}
 
+          {driverMessage && (
+            <View style={styles.driverMessageAlert}>
+              <View style={styles.messageAlertHeader}>
+                <Text style={styles.messageAlertTitle}>💬 Message from Driver</Text>
+              </View>
+              <Text style={styles.messageAlertContent}>"{driverMessage}"</Text>
+            </View>
+          )}
+
           {rideStatus && (
             <View style={styles.statusBanner}>
               <Text style={styles.statusBannerTitle}>{rideStatusTitle}</Text>
@@ -808,7 +842,7 @@ export default function CustomerScreen() {
             </View>
           )}
 
-          {rideOTP && (rideStatus === "pending" || rideStatus === "accepted") && (
+          {rideOTP && rideStatus === "accepted" && (
             <View style={styles.otpCard}>
               <Text style={styles.otpLabel}>Share OTP With Driver</Text>
               <Text style={styles.otpValue}>{rideOTP}</Text>
@@ -818,10 +852,44 @@ export default function CustomerScreen() {
 
           {showArrivalCard && (
             <View style={styles.arrivalCard}>
-              <Text style={styles.arrivalTitle}>🚖 Driver arriving</Text>
-              <Text style={styles.arrivalText}>Your ride will start soon.</Text>
-              <Text style={styles.arrivalText}>Driver is on the way.</Text>
-              {driverETA && <Text style={styles.arrivalEta}>ETA: {driverETA} mins</Text>}
+              <View style={styles.arrivalCardHeader}>
+                <Text style={styles.arrivalTitle}>🚖 Driver arriving</Text>
+                {driverETA && <Text style={styles.arrivalEtaText}>{driverETA} mins away</Text>}
+              </View>
+              
+              {/* Driver Partner Identity Row */}
+              <View style={styles.driverIdentityRow}>
+                <View style={styles.driverAvatar}>
+                  <Text style={styles.driverAvatarText}>
+                    {String(selectedDriver?.name || "D").substring(0, 1).toUpperCase()}
+                  </Text>
+                </View>
+                <View style={styles.driverMeta}>
+                  <Text style={styles.driverNameText}>{selectedDriver?.name || "Driver Partner"}</Text>
+                  <Text style={styles.driverVehicleText}>
+                    🚗 Suzuki Dzire • {String(selectedVehicle || "Car").toUpperCase()}
+                  </Text>
+                </View>
+                <View style={styles.riderCommRow}>
+                  <TouchableOpacity 
+                    style={styles.riderCommCircle}
+                    onPress={() => Alert.alert("Calling Driver 📞", `Dialing driver partner ${selectedDriver?.name || ""}...`)}
+                  >
+                    <Ionicons name="call" size={18} color="#0F172A" />
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              {/* Driver Message Option block */}
+              {driverMessage && (
+                <View style={styles.riderMsgOptionRow}>
+                  <View style={styles.riderMsgHeader}>
+                    <Text style={styles.riderMsgTitle}>💬 MESSAGE FROM DRIVER</Text>
+                  </View>
+                  <Text style={styles.riderMsgText}>"{driverMessage}"</Text>
+                </View>
+              )}
+
               <TouchableOpacity style={styles.cancelRideBtn} onPress={cancelRideRequest}>
                 <Text style={styles.cancelRideBtnText}>Cancel Ride</Text>
               </TouchableOpacity>
@@ -830,6 +898,16 @@ export default function CustomerScreen() {
 
           {distance && !rideStatus && (
             <View style={styles.bottomCard}>
+              <View style={styles.dragHandle} />
+              
+              <View style={styles.routeSummaryRow}>
+                <Text style={styles.routeSummaryText}>⏱️ {duration} mins • {distance} km</Text>
+                <TouchableOpacity style={styles.paymentMethodRow} activeOpacity={0.7}>
+                  <Text style={styles.paymentMethodText}>💵 Cash</Text>
+                  <Text style={styles.paymentMethodArrow}>›</Text>
+                </TouchableOpacity>
+              </View>
+
               <Text style={styles.selectVehicleTitle}>Select vehicle class</Text>
               
               <View style={styles.vehicleSelectorRow}>
@@ -840,7 +918,7 @@ export default function CustomerScreen() {
                 >
                   <Text style={styles.vehicleIcon}>🏍️</Text>
                   <View style={styles.vehicleDetails}>
-                    <Text style={styles.vehicleLabel}>RideX Bike</Text>
+                    <Text style={styles.vehicleLabel}>RideX Moto</Text>
                     <Text style={styles.vehicleEtaText}>Quick & Solo • 2 mins</Text>
                   </View>
                   <Text style={styles.vehiclePrice}>₹{getFareForVehicle("bike", Number(distance))}</Text>
@@ -866,23 +944,16 @@ export default function CustomerScreen() {
                 >
                   <Text style={styles.vehicleIcon}>🚗</Text>
                   <View style={styles.vehicleDetails}>
-                    <Text style={styles.vehicleLabel}>RideX Car</Text>
+                    <Text style={styles.vehicleLabel}>RideX Go</Text>
                     <Text style={styles.vehicleEtaText}>Premium Comfort • 4 mins</Text>
                   </View>
                   <Text style={styles.vehiclePrice}>₹{getFareForVehicle("car", Number(distance))}</Text>
                 </TouchableOpacity>
               </View>
 
-              <View style={styles.bookingActionRow}>
-                <View>
-                  <Text style={styles.distanceText}>{distance} km</Text>
-                  <Text style={styles.durationText}>{duration} mins route</Text>
-                </View>
-
-                <TouchableOpacity style={styles.bookBtn} onPress={bookRide}>
-                  <Text style={styles.bookText}>Book {selectedVehicle.toUpperCase()}</Text>
-                </TouchableOpacity>
-              </View>
+              <TouchableOpacity style={styles.fullWidthBookBtn} onPress={bookRide} activeOpacity={0.9}>
+                <Text style={styles.fullWidthBookText}>Confirm Ride</Text>
+              </TouchableOpacity>
             </View>
           )}
 
@@ -1005,39 +1076,41 @@ export default function CustomerScreen() {
       )}
 
       {/* BOTTOM TAB NAVIGATION */}
-      <View style={styles.tabBar}>
-        <TouchableOpacity
-          style={[styles.tabItem, activeTab === "home" && styles.tabItemActive]}
-          onPress={() => setActiveTab("home")}
-        >
-          <Text style={styles.tabIcon}>{activeTab === "home" ? "🏠" : "🏠"}</Text>
-          <Text style={[styles.tabLabel, activeTab === "home" && styles.tabLabelActive]}>Home</Text>
-        </TouchableOpacity>
+      {!destination && !rideStatus && (
+        <View style={styles.tabBar}>
+          <TouchableOpacity
+            style={[styles.tabItem, activeTab === "home" && styles.tabItemActive]}
+            onPress={() => setActiveTab("home")}
+          >
+            <Text style={styles.tabIcon}>{activeTab === "home" ? "🏠" : "🏠"}</Text>
+            <Text style={[styles.tabLabel, activeTab === "home" && styles.tabLabelActive]}>Home</Text>
+          </TouchableOpacity>
 
-        <TouchableOpacity
-          style={[styles.tabItem, activeTab === "services" && styles.tabItemActive]}
-          onPress={() => setActiveTab("services")}
-        >
-          <Text style={styles.tabIcon}>{activeTab === "services" ? "🛠️" : "🛠️"}</Text>
-          <Text style={[styles.tabLabel, activeTab === "services" && styles.tabLabelActive]}>Services</Text>
-        </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.tabItem, activeTab === "services" && styles.tabItemActive]}
+            onPress={() => setActiveTab("services")}
+          >
+            <Text style={styles.tabIcon}>{activeTab === "services" ? "🛠️" : "🛠️"}</Text>
+            <Text style={[styles.tabLabel, activeTab === "services" && styles.tabLabelActive]}>Services</Text>
+          </TouchableOpacity>
 
-        <TouchableOpacity
-          style={[styles.tabItem, activeTab === "activity" && styles.tabItemActive]}
-          onPress={() => setActiveTab("activity")}
-        >
-          <Text style={styles.tabIcon}>{activeTab === "activity" ? "📋" : "📋"}</Text>
-          <Text style={[styles.tabLabel, activeTab === "activity" && styles.tabLabelActive]}>Activity</Text>
-        </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.tabItem, activeTab === "activity" && styles.tabItemActive]}
+            onPress={() => setActiveTab("activity")}
+          >
+            <Text style={styles.tabIcon}>{activeTab === "activity" ? "📋" : "📋"}</Text>
+            <Text style={[styles.tabLabel, activeTab === "activity" && styles.tabLabelActive]}>Activity</Text>
+          </TouchableOpacity>
 
-        <TouchableOpacity
-          style={[styles.tabItem, activeTab === "account" && styles.tabItemActive]}
-          onPress={() => setActiveTab("account")}
-        >
-          <Text style={styles.tabIcon}>{activeTab === "account" ? "👤" : "👤"}</Text>
-          <Text style={[styles.tabLabel, activeTab === "account" && styles.tabLabelActive]}>Account</Text>
-        </TouchableOpacity>
-      </View>
+          <TouchableOpacity
+            style={[styles.tabItem, activeTab === "account" && styles.tabItemActive]}
+            onPress={() => setActiveTab("account")}
+          >
+            <Text style={styles.tabIcon}>{activeTab === "account" ? "👤" : "👤"}</Text>
+            <Text style={[styles.tabLabel, activeTab === "account" && styles.tabLabelActive]}>Account</Text>
+          </TouchableOpacity>
+        </View>
+      )}
     </View>
   );
 }
@@ -1785,22 +1858,62 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     color: "#0F172A",
   },
-  bookingActionRow: {
+  dragHandle: {
+    width: 40,
+    height: 5,
+    borderRadius: 2.5,
+    backgroundColor: "#E2E8F0",
+    alignSelf: "center",
+    marginBottom: 12,
+  },
+  routeSummaryRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    width: "100%",
+    marginBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: "#F1F5F9",
+    paddingBottom: 12,
   },
-  distanceText: {
-    fontSize: 20,
-    fontWeight: "900",
+  routeSummaryText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#475569",
+  },
+  paymentMethodRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  paymentMethodText: {
+    fontSize: 14,
+    fontWeight: "700",
     color: "#0F172A",
   },
-  durationText: {
-    fontSize: 13,
-    color: "#64748B",
-    marginTop: 2,
-    fontWeight: "600",
+  paymentMethodArrow: {
+    fontSize: 18,
+    color: "#94A3B8",
+    fontWeight: "bold",
+    marginTop: -2,
+  },
+  fullWidthBookBtn: {
+    backgroundColor: "#0F172A", // Slate black like Uber
+    width: "100%",
+    height: 54,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000",
+    shadowOpacity: 0.1,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 4,
+  },
+  fullWidthBookText: {
+    color: "#ffffff",
+    fontSize: 16,
+    fontWeight: "900",
+    letterSpacing: 0.5,
   },
   resetDebugBtn: {
     position: "absolute",
@@ -1821,16 +1934,18 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   cancelRideBtn: {
-    backgroundColor: "#EF4444",
+    backgroundColor: "#F1F5F9",
     borderRadius: 16,
     height: 44,
     justifyContent: "center",
     alignItems: "center",
     marginTop: 12,
     width: "100%",
+    borderWidth: 1,
+    borderColor: "#CBD5E1",
   },
   cancelRideBtnText: {
-    color: "white",
+    color: "#475569",
     fontSize: 14,
     fontWeight: "800",
   },
@@ -1896,15 +2011,20 @@ const styles = StyleSheet.create({
     color: "#334155",
   },
   realAddressInput: {
-    backgroundColor: "rgba(15, 23, 42, 0.94)",
-    borderRadius: 18,
-    height: 58,
-    paddingHorizontal: 18,
-    fontSize: 16,
-    color: "white",
+    backgroundColor: "#FFFFFF",
+    borderRadius: 16,
+    height: 52,
+    paddingHorizontal: 16,
+    fontSize: 15,
+    color: "#0F172A",
     fontWeight: "600",
-    borderWidth: 1,
-    borderColor: "rgba(148, 163, 184, 0.16)",
+    borderWidth: 1.5,
+    borderColor: "#E2E8F0",
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 3,
   },
   liveSuggestionsDropdown: {
     backgroundColor: "white",
@@ -1941,5 +2061,160 @@ const styles = StyleSheet.create({
     position: "absolute",
     right: 18,
     top: 18,
+  },
+  driverMessageAlert: {
+    position: "absolute",
+    top: 130,
+    left: 20,
+    right: 20,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 20,
+    padding: 14,
+    borderWidth: 1.5,
+    borderColor: "#E2E8F0",
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.12,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 8,
+    zIndex: 1000,
+  },
+  messageAlertHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 4,
+  },
+  messageAlertTitle: {
+    fontSize: 12,
+    fontWeight: "900",
+    color: "#2563EB",
+    textTransform: "uppercase",
+    letterSpacing: 0.8,
+  },
+  messageAlertContent: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#0F172A",
+    lineHeight: 18,
+  },
+  uberPickupMarkerOuter: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: "#000000",
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000000",
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 3,
+  },
+  uberPickupMarkerInner: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "#FFFFFF",
+  },
+  uberDropoffMarkerOuter: {
+    width: 16,
+    height: 16,
+    backgroundColor: "#000000",
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000000",
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 3,
+  },
+  uberDropoffMarkerInner: {
+    width: 5,
+    height: 5,
+    backgroundColor: "#FFFFFF",
+  },
+  arrivalCardHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  arrivalEtaText: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: "#2563EB",
+  },
+  driverIdentityRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 12,
+    borderTopWidth: 1.5,
+    borderTopColor: "#F1F5F9",
+    borderBottomWidth: 1.5,
+    borderBottomColor: "#F1F5F9",
+    marginBottom: 12,
+  },
+  driverAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "#E2E8F0",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  driverAvatarText: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: "#475569",
+  },
+  driverMeta: {
+    flex: 1,
+    marginLeft: 12,
+  },
+  driverNameText: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#0F172A",
+  },
+  driverVehicleText: {
+    fontSize: 12,
+    color: "#64748B",
+    marginTop: 2,
+  },
+  riderCommRow: {
+    flexDirection: "row",
+  },
+  riderCommCircle: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: "#F1F5F9",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  riderMsgOptionRow: {
+    backgroundColor: "#F8FAFC",
+    borderLeftWidth: 4,
+    borderLeftColor: "#2563EB",
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 14,
+  },
+  riderMsgHeader: {
+    marginBottom: 4,
+  },
+  riderMsgTitle: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: "#2563EB",
+    letterSpacing: 0.5,
+  },
+  riderMsgText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#334155",
+    fontStyle: "italic",
   },
 });
