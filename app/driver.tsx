@@ -372,6 +372,28 @@ export default function DriverScreen() {
     const { status } = await Location.requestForegroundPermissionsAsync();
     if (status !== "granted") return;
 
+    // Fetch initial driver coordinates immediately on app startup
+    try {
+      const initialLoc = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+      const initialCoords = {
+        latitude: initialLoc.coords.latitude,
+        longitude: initialLoc.coords.longitude,
+      };
+      setLocation(initialCoords);
+
+      if (user) {
+        await update(ref(db, `drivers/${user.uid}`), {
+          latitude: initialCoords.latitude,
+          longitude: initialCoords.longitude,
+          isActive: isActiveRef.current,
+        });
+      }
+    } catch (err) {
+      console.warn("Failed to get initial driver position:", err);
+    }
+
     if (trackingSubRef.current) {
       trackingSubRef.current.remove();
       trackingSubRef.current = null;

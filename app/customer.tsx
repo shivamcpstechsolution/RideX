@@ -66,27 +66,34 @@ export default function CustomerScreen() {
     }
     setLoading(true);
     try {
-      console.log("Fetching suggestions for query:", inputText);
-      const response = await fetch("https://places.googleapis.com/v1/places:autocomplete", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Goog-Api-Key": GOOGLE_MAPS_APIKEY,
-        },
-        body: JSON.stringify({
-          input: inputText,
-          includedRegionCodes: ["in"],
-        }),
-      });
+      console.log("Fetching OSM suggestions for query:", inputText);
+      const response = await fetch(
+        `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(inputText)}&format=json&limit=5&countrycodes=in`,
+        {
+          headers: {
+            "User-Agent": "RideXApp/1.0",
+          },
+        }
+      );
       const data = await response.json();
-      console.log("Suggestions API response:", JSON.stringify(data));
-      if (data && data.suggestions) {
-        setSuggestions(data.suggestions);
+      console.log("OSM API response status/length:", data?.length);
+
+      if (data && Array.isArray(data)) {
+        // Map OSM results to match the schema expected by the UI and prediction parsing
+        const mapped = data.map((item: any) => ({
+          placePrediction: {
+            placeId: `osm_${item.lat}_${item.lon}`,
+            text: {
+              text: item.display_name,
+            },
+          },
+        }));
+        setSuggestions(mapped);
       } else {
         setSuggestions([]);
       }
     } catch (error) {
-      console.error("Autocomplete API error:", error);
+      console.error("OSM Autocomplete API error:", error);
       setSuggestions([]);
     } finally {
       setLoading(false);
@@ -118,6 +125,37 @@ export default function CustomerScreen() {
     description: string,
     isPickup: boolean
   ) => {
+    // If the suggestion is from OpenStreetMap, extract coordinates directly from the placeId
+    if (placeId.startsWith("osm_")) {
+      try {
+        const parts = placeId.split("_");
+        const lat = parseFloat(parts[1]);
+        const lng = parseFloat(parts[2]);
+        const address = description;
+
+        if (isPickup) {
+          setSource({ latitude: lat, longitude: lng });
+          setPickupAddress(address);
+          setPickupSearchText(address);
+          setPickupSuggestions([]);
+        } else {
+          setDestination({ latitude: lat, longitude: lng });
+          setDestinationAddress(address);
+          setDestinationSearchText(address);
+          setDestinationSuggestions([]);
+
+          mapRef.current?.animateCamera({
+            center: { latitude: lat, longitude: lng },
+            zoom: 14,
+          });
+        }
+      } catch (err) {
+        console.error("Error parsing OSM coordinates:", err);
+        Alert.alert("Error", "Failed to resolve coordinates.");
+      }
+      return;
+    }
+
     try {
       const response = await fetch(`https://places.googleapis.com/v1/places/${placeId}`, {
         method: "GET",
@@ -289,8 +327,8 @@ export default function CustomerScreen() {
       vehicle === "bike"
         ? 20 + dist * 6
         : vehicle === "auto"
-        ? 30 + dist * 9
-        : 50 + dist * 14
+          ? 30 + dist * 9
+          : 50 + dist * 14
     );
   };
 
@@ -856,7 +894,7 @@ export default function CustomerScreen() {
                 <Text style={styles.arrivalTitle}>🚖 Driver arriving</Text>
                 {driverETA && <Text style={styles.arrivalEtaText}>{driverETA} mins away</Text>}
               </View>
-              
+
               {/* Driver Partner Identity Row */}
               <View style={styles.driverIdentityRow}>
                 <View style={styles.driverAvatar}>
@@ -871,7 +909,7 @@ export default function CustomerScreen() {
                   </Text>
                 </View>
                 <View style={styles.riderCommRow}>
-                  <TouchableOpacity 
+                  <TouchableOpacity
                     style={styles.riderCommCircle}
                     onPress={() => Alert.alert("Calling Driver 📞", `Dialing driver partner ${selectedDriver?.name || ""}...`)}
                   >
@@ -899,7 +937,7 @@ export default function CustomerScreen() {
           {distance && !rideStatus && (
             <View style={styles.bottomCard}>
               <View style={styles.dragHandle} />
-              
+
               <View style={styles.routeSummaryRow}>
                 <Text style={styles.routeSummaryText}>⏱️ {duration} mins • {distance} km</Text>
                 <TouchableOpacity style={styles.paymentMethodRow} activeOpacity={0.7}>
@@ -909,7 +947,7 @@ export default function CustomerScreen() {
               </View>
 
               <Text style={styles.selectVehicleTitle}>Select vehicle class</Text>
-              
+
               <View style={styles.vehicleSelectorRow}>
                 <TouchableOpacity
                   style={[styles.vehicleOptionCard, selectedVehicle === "bike" && styles.vehicleOptionCardSelected]}
@@ -1062,7 +1100,7 @@ export default function CustomerScreen() {
             <Text style={styles.accountMenuText}>ℹ️ Help & Support</Text>
             <Text style={styles.accountMenuArrow}>→</Text>
           </TouchableOpacity>
-          <TouchableOpacity 
+          <TouchableOpacity
             style={[styles.accountMenuItem, { borderColor: "rgba(239, 68, 68, 0.2)", backgroundColor: "rgba(239, 68, 68, 0.05)" }]}
             onPress={async () => {
               await logoutUser();
