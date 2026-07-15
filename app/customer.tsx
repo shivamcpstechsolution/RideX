@@ -1,4 +1,4 @@
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { useEffect, useRef, useState } from "react";
 import { Alert, StatusBar, StyleSheet, Text, TouchableOpacity, View, TextInput, ScrollView, ActivityIndicator } from "react-native";
 
@@ -19,7 +19,12 @@ const MAX_RIDE_DISTANCE_KM = 35;
 export default function CustomerScreen() {
   const mapRef = useRef<any>(null);
   const user = getCurrentUser();
+  const { mode } = useLocalSearchParams<{ mode?: string }>();
 
+  // Reserve Schedule states
+  const [scheduledDate, setScheduledDate] = useState<string>("");
+  const [scheduledTime, setScheduledTime] = useState<string>("");
+  const [showDatePicker, setShowDatePicker] = useState(false);
 
   const [currentRideId, setCurrentRideId] = useState<string | null>(null);
   const [source, setSource] = useState<any>(null);
@@ -51,9 +56,63 @@ export default function CustomerScreen() {
   const [destinationSuggestions, setDestinationSuggestions] = useState<any[]>([]);
   const [loadingPickup, setLoadingPickup] = useState(false);
   const [loadingDestination, setLoadingDestination] = useState(false);
+  const [savedPlaces, setSavedPlaces] = useState<{ home?: string; work?: string }>({});
+  
+  // Interactive syncing states
+  const [activePromo, setActivePromo] = useState<any>(null);
+  const [defaultPayment, setDefaultPayment] = useState("💵 Cash");
+  const [themeMode, setThemeMode] = useState<"light" | "dark">("light");
 
   const pickupTimeoutRef = useRef<any>(null);
   const destTimeoutRef = useRef<any>(null);
+  const rideTimeoutRef = useRef<any>(null);
+
+  const fetchOsmAutocompleteFallback = async (
+    inputText: string,
+    setSuggestions: (s: any[]) => void
+  ) => {
+    try {
+      console.log("Attempting Photon OSM fallback suggestions for query:", inputText);
+      const response = await fetch(
+        `https://photon.komoot.io/api/?q=${encodeURIComponent(inputText)}&limit=5`
+      );
+      if (response.ok) {
+        const data = await response.json();
+        if (data && data.features && Array.isArray(data.features)) {
+          const mapped = data.features.map((item: any) => {
+            const props = item.properties;
+            const geom = item.geometry;
+            const lat = geom.coordinates[1];
+            const lon = geom.coordinates[0];
+            
+            // Build a descriptive label: Name, Street, City, State, Country
+            const labelParts = [
+              props.name,
+              props.street,
+              props.city || props.town || props.village,
+              props.state,
+              props.country
+            ].filter(Boolean);
+            const label = labelParts.join(", ");
+
+            return {
+              placePrediction: {
+                placeId: `osm_${lat}_${lon}`,
+                text: {
+                  text: label,
+                },
+              },
+            };
+          });
+          setSuggestions(mapped);
+          return;
+        }
+      }
+    } catch (err) {
+      console.error("Photon OSM fallback autocomplete request failed:", err);
+    }
+    setSuggestions([]);
+  };
 
   const fetchAutocomplete = async (
     inputText: string,
@@ -66,35 +125,38 @@ export default function CustomerScreen() {
     }
     setLoading(true);
     try {
-      console.log("Fetching OSM suggestions for query:", inputText);
-      const response = await fetch(
-        `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(inputText)}&format=json&limit=5&countrycodes=in`,
-        {
-          headers: {
-            "User-Agent": "RideXApp/1.0",
-          },
-        }
-      );
-      const data = await response.json();
-      console.log("OSM API response status/length:", data?.length);
+      console.log("Fetching Google Places Autocomplete suggestions for query:", inputText);
+      const url = `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${encodeURIComponent(inputText)}&key=${GOOGLE_MAPS_APIKEY}&components=country:in`;
+      
+      const response = await fetch(url);
+      if (!response.ok) {
+        console.warn("Google autocomplete request failed. Status:", response.status, response.statusText);
+        // Fallback to OSM
+        await fetchOsmAutocompleteFallback(inputText, setSuggestions);
+        return;
+      }
 
-      if (data && Array.isArray(data)) {
-        // Map OSM results to match the schema expected by the UI and prediction parsing
-        const mapped = data.map((item: any) => ({
+      const data = await response.json();
+      console.log("Google Autocomplete response status:", data?.status);
+
+      if (data && data.predictions && Array.isArray(data.predictions) && data.predictions.length > 0) {
+        const mapped = data.predictions.map((pred: any) => ({
           placePrediction: {
-            placeId: `osm_${item.lat}_${item.lon}`,
+            placeId: pred.place_id,
             text: {
-              text: item.display_name,
+              text: pred.description,
             },
           },
         }));
         setSuggestions(mapped);
       } else {
-        setSuggestions([]);
+        // Fallback to OSM
+        console.log("Google Autocomplete predictions empty. Trying OSM fallback...");
+        await fetchOsmAutocompleteFallback(inputText, setSuggestions);
       }
     } catch (error) {
-      console.error("OSM Autocomplete API error:", error);
-      setSuggestions([]);
+      console.error("Google Autocomplete API error. Trying OSM fallback:", error);
+      await fetchOsmAutocompleteFallback(inputText, setSuggestions);
     } finally {
       setLoading(false);
     }
@@ -215,6 +277,14 @@ export default function CustomerScreen() {
   }, [user]);
 
   useEffect(() => {
+    if (mode === "reserve") {
+      setScheduledDate("Tomorrow");
+      setScheduledTime("09:30 AM");
+      setShowDatePicker(true);
+    }
+  }, [mode]);
+
+  useEffect(() => {
     if (source) {
       const unsubDrivers = getNearbyDrivers(source);
       return () => {
@@ -234,6 +304,117 @@ export default function CustomerScreen() {
       }
     });
   }, [user]);
+
+  // Listen and sync user details (saved places, active promo, payment, theme) from Firebase
+  useEffect(() => {
+    if (!user) return;
+    const userRef = ref(db, `users/${user.uid}`);
+    return onValue(userRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        if (data.savedPlaces) {
+          setSavedPlaces({
+            home: data.savedPlaces.home || "",
+            work: data.savedPlaces.work || "",
+          });
+        } else {
+          setSavedPlaces({});
+        }
+        if (data.activePromo) {
+          setActivePromo(data.activePromo);
+        } else {
+          setActivePromo(null);
+        }
+        if (data.defaultPayment) {
+          setDefaultPayment(data.defaultPayment);
+        }
+        if (data.themeMode) {
+          setThemeMode(data.themeMode);
+        }
+      }
+    });
+  }, [user]);
+
+  const resolveAddressToLocation = async (address: string) => {
+    try {
+      const response = await fetch(
+        `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${GOOGLE_MAPS_APIKEY}`
+      );
+      const data = await response.json();
+      if (data && data.results && data.results.length > 0) {
+        const loc = data.results[0].geometry.location;
+        return {
+          latitude: loc.lat,
+          longitude: loc.lng,
+          formattedAddress: data.results[0].formatted_address,
+        };
+      }
+    } catch (err) {
+      console.error("Google Geocoding failed, trying OSM Geocoding fallback:", err);
+    }
+    
+    // Fallback: Photon API
+    try {
+      const res = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(address)}&limit=1`);
+      const data = await res.json();
+      if (data && data.features && data.features.length > 0) {
+        const geom = data.features[0].geometry;
+        const props = data.features[0].properties;
+        const lat = geom.coordinates[1];
+        const lon = geom.coordinates[0];
+        const labelParts = [
+          props.name,
+          props.street,
+          props.city || props.town || props.village,
+          props.state,
+          props.country
+        ].filter(Boolean);
+        return {
+          latitude: lat,
+          longitude: lon,
+          formattedAddress: labelParts.join(", ") || address,
+        };
+      }
+    } catch (err) {
+      console.error("OSM Geocoding failed:", err);
+    }
+    return null;
+  };
+
+  const handleSavedPlaceSelect = async (placeType: "home" | "work") => {
+    const address = placeType === "home" ? savedPlaces.home : savedPlaces.work;
+    if (!address) {
+      Alert.alert(
+        "Address Not Set",
+        `Please set your saved ${placeType} address first in the Account Settings tab.`
+      );
+      return;
+    }
+
+    setLoadingDestination(true);
+
+    try {
+      const result = await resolveAddressToLocation(address);
+      if (result) {
+        const { latitude, longitude, formattedAddress } = result;
+        setDestination({ latitude, longitude });
+        setDestinationAddress(formattedAddress);
+        setDestinationSearchText(formattedAddress);
+        setDestinationSuggestions([]);
+
+        mapRef.current?.animateCamera({
+          center: { latitude, longitude },
+          zoom: 14,
+        });
+      } else {
+        Alert.alert("Error", `Could not resolve coordinates for ${address}. Please verify it.`);
+      }
+    } catch (err) {
+      Alert.alert("Error", "Geocoding service error.");
+    } finally {
+      setLoadingDestination(false);
+    }
+  };
 
   // Listen to the unique active ride data
   useEffect(() => {
@@ -261,7 +442,36 @@ export default function CustomerScreen() {
         if (status === "pending") {
           setRideStatusTitle("Ride request sent");
           setRideStatusMessage("Your request is live and the nearest active driver is being notified.");
-        } else if (status === "accepted") {
+          
+          // Auto-cancellation 90-second timeout checker
+          const createdAt = data.createdAt || Date.now();
+          const elapsedMs = Date.now() - createdAt;
+          const remainingMs = 90000 - elapsedMs;
+
+          if (elapsedMs >= 90000) {
+            cancelRideRequest();
+            Alert.alert(
+              "Request Timed Out ⏰", 
+              "No driver accepted your request within 90 seconds. The ride has been automatically cancelled."
+            );
+          } else {
+            if (rideTimeoutRef.current) clearTimeout(rideTimeoutRef.current);
+            rideTimeoutRef.current = setTimeout(() => {
+              cancelRideRequest();
+              Alert.alert(
+                "Request Timed Out ⏰", 
+                "No driver accepted your request within 90 seconds. The ride has been automatically cancelled."
+              );
+            }, remainingMs);
+          }
+        } else {
+          if (rideTimeoutRef.current) {
+            clearTimeout(rideTimeoutRef.current);
+            rideTimeoutRef.current = null;
+          }
+        }
+
+        if (status === "accepted") {
           setRideStatusTitle("Driver accepted");
           setRideStatusMessage("Your driver is on the way. Keep this screen open for live updates.");
         } else if (status === "rejected") {
@@ -308,6 +518,9 @@ export default function CustomerScreen() {
       if (driverLocSubRef.current) {
         driverLocSubRef.current();
       }
+      if (rideTimeoutRef.current) {
+        clearTimeout(rideTimeoutRef.current);
+      }
     };
   }, [currentRideId]);
   useEffect(() => {
@@ -332,17 +545,29 @@ export default function CustomerScreen() {
     );
   };
 
+  const getDiscountedFare = (vehicle: "bike" | "auto" | "car", dist: number) => {
+    let rawFare = getFareForVehicle(vehicle, dist);
+    if (activePromo) {
+      if (activePromo.type === "percent") {
+        rawFare = Math.round(rawFare * (1 - activePromo.discount / 100));
+      } else if (activePromo.type === "flat") {
+        rawFare = Math.max(0, rawFare - activePromo.discount);
+      }
+    }
+    return rawFare;
+  };
+
   // Local fallback distance calculation (if Directions API fails or is not billed)
   useEffect(() => {
     if (source && destination) {
       const directDist = getDistance(source, destination) / 1000;
       const estimatedRoadDist = directDist * 1.25; // 25% overhead for road curves
       setDistance(estimatedRoadDist.toFixed(1));
-      const calculatedFare = getFareForVehicle(selectedVehicle, estimatedRoadDist);
+      const calculatedFare = getDiscountedFare(selectedVehicle, estimatedRoadDist);
       setFare(calculatedFare);
       setDuration(Math.ceil(estimatedRoadDist * 2)); // Estimate 2 mins per km
     }
-  }, [source, destination, selectedVehicle]);
+  }, [source, destination, selectedVehicle, activePromo]);
   const resetBookingState = async () => {
     try {
       if (currentRideId) {
@@ -374,7 +599,7 @@ export default function CustomerScreen() {
     getCurrentLocation();
   };
 
-  const cancelRideRequest = async () => {
+  async function cancelRideRequest() {
     try {
       if (currentRideId) {
         await set(ref(db, `rides/${currentRideId}/status`), "cancelled");
@@ -500,6 +725,47 @@ export default function CustomerScreen() {
       return;
     }
 
+    const isReserveBooking = !!scheduledDate && !!scheduledTime;
+
+    if (isReserveBooking && user) {
+      const newReserveRef = push(ref(db, `users/${user.uid}/reserves`));
+      const reserveId = newReserveRef.key;
+      if (!reserveId) return;
+
+      await set(newReserveRef, {
+        id: reserveId,
+        customerId: user.uid,
+        customerName: user.displayName || "RideX Customer",
+        customerPhone: "+91 88888 88888",
+        source,
+        destination,
+        pickupAddress: pickupAddress || "Current Location",
+        destinationAddress: destinationAddress,
+        distance,
+        duration,
+        scheduledDate,
+        scheduledTime,
+        status: "scheduled",
+        createdAt: Date.now(),
+        vehicleType: selectedVehicle,
+        fare: fare,
+      });
+
+      Alert.alert(
+        "Ride Scheduled! 📅",
+        `Your RideX reserve booking is confirmed for ${scheduledDate} at ${scheduledTime}.\n\nWe will assign your driver 15-30 minutes before your trip starts!`,
+        [
+          {
+            text: "Done",
+            onPress: () => {
+              router.replace("/index");
+            }
+          }
+        ]
+      );
+      return;
+    }
+
     const availableDrivers = (drivers || []).filter(
       (driver: any) => (driver.distance ?? 0) <= MAX_DRIVER_RADIUS_KM
     );
@@ -600,17 +866,22 @@ export default function CustomerScreen() {
     });
   };
 
+  const isDarkMode = themeMode === "dark";
+  const themeBg = isDarkMode ? "#090D1A" : "#F8FAFC";
+  const themeCard = isDarkMode ? "#171E2E" : "#FFFFFF";
+  const themeText = isDarkMode ? "#FFFFFF" : "#0F172A";
+  const themeTextMuted = isDarkMode ? "#94A3B8" : "#64748B";
+  const themeBorder = isDarkMode ? "#1F2937" : "#E2E8F0";
+  const themeStatusBar = isDarkMode ? "light-content" : "dark-content";
+
   return (
-    <View style={styles.container}>
-      <StatusBar barStyle="light-content" />
+    <View style={[styles.container, { backgroundColor: themeBg }]}>
+      <StatusBar barStyle={themeStatusBar} />
 
       <View style={styles.topGlow} />
       <View style={styles.bottomGlow} />
 
-      {/* Floating Debug Reset Button */}
-      <TouchableOpacity style={styles.resetDebugBtn} onPress={resetBookingState}>
-        <Text style={styles.resetDebugText}>Reset Console</Text>
-      </TouchableOpacity>
+
 
       {/* HOME TAB - Map & Ride Booking */}
       {activeTab === "home" && (
@@ -716,7 +987,7 @@ export default function CustomerScreen() {
                 optimizeWaypoints={true}
                 onReady={(result) => {
                   setDistance(result.distance.toFixed(1));
-                  const initialFare = getFareForVehicle(selectedVehicle, result.distance);
+                  const initialFare = getDiscountedFare(selectedVehicle, result.distance);
                   setFare(initialFare);
                   setDuration(Math.ceil(result.duration));
                 }}
@@ -725,107 +996,220 @@ export default function CustomerScreen() {
           </MapView>
 
           {rideStatus !== "pending" && rideStatus !== "accepted" && rideStatus !== "started" && !destination && (
-            <View style={styles.searchContainer}>
-              <View style={styles.heroCard}>
-                <View style={styles.heroCardGlow} />
-                <View style={styles.heroTopRow}>
-                  <View>
-                    <Text style={styles.kicker}>RideX</Text>
-                    <Text style={styles.heading}>Plan your trip</Text>
-                  </View>
-                  <View style={styles.liveBadge}>
-                    <View style={styles.liveDot} />
-                    <Text style={styles.liveBadgeText}>Online</Text>
-                  </View>
-                </View>
-
-                <Text style={styles.subheading}>Enter pickup and destination to book.</Text>
-
-                <View style={styles.heroStatsRow}>
-                  <View style={styles.statChip}>
-                    <Text style={styles.statValue}>{drivers.length}</Text>
-                    <Text style={styles.statLabel}>drivers nearby</Text>
-                  </View>
-                  <View style={styles.statChip}>
-                    <Text style={styles.statValue}>OTP</Text>
-                    <Text style={styles.statLabel}>secure ride</Text>
-                  </View>
-                  <View style={styles.statChip}>
-                    <Text style={styles.statValue}>Live</Text>
-                    <Text style={styles.statLabel}>tracking</Text>
-                  </View>
-                </View>
+            <View style={[styles.searchContainer, { backgroundColor: themeCard }]}>
+              <View style={[styles.uberSearchHeader, { borderBottomWidth: 0 }]}>
+                <TouchableOpacity onPress={() => router.back()} style={[styles.uberBackBtn, { backgroundColor: isDarkMode ? "#1E293B" : "#F1F5F9" }]} activeOpacity={0.7}>
+                  <Ionicons name="arrow-back" size={22} color={themeText} />
+                </TouchableOpacity>
+                <Text style={[styles.uberHeaderTitle, { color: themeText, flex: 1, textAlign: "center", marginRight: 40 }]}>Plan your ride</Text>
               </View>
 
-              {/* Pickup Address Label & GPS Shortcut */}
-              <View style={styles.pickupLabelRow}>
-                <Text style={styles.sectionInputLabel}>From (Pickup Address)</Text>
-                <TouchableOpacity
-                  style={styles.gpsShortcutBtn}
-                  onPress={getCurrentLocation}
+              {/* Horizontal Pill Options (Uber-Style) */}
+              <View style={styles.pillsRow}>
+                <TouchableOpacity 
+                  style={[styles.pillBtn, { backgroundColor: isDarkMode ? "#1E293B" : "#F1F5F9" }]} 
                   activeOpacity={0.7}
+                  onPress={() => setShowDatePicker(true)}
                 >
-                  <Text style={styles.gpsShortcutText}>📍 Use Live GPS</Text>
+                  <Text style={[styles.pillText, { color: themeText }]}>
+                    {scheduledDate && scheduledTime 
+                      ? `📅 ${scheduledDate}, ${scheduledTime}  ▼` 
+                      : "🕒 Pickup now  ▼"}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.pillBtn, { backgroundColor: isDarkMode ? "#1E293B" : "#F1F5F9" }]} activeOpacity={0.7}>
+                  <Text style={[styles.pillText, { color: themeText }]}>👤 For me  ▼</Text>
                 </TouchableOpacity>
               </View>
 
-              {/* Pickup Address Field with Real Google API (New) */}
-              <View style={styles.inputSearchWrapper}>
-                <TextInput
-                  style={styles.realAddressInput}
-                  placeholder="Where to pick up from?"
-                  placeholderTextColor="#94A3B8"
-                  value={pickupSearchText}
-                  onChangeText={handlePickupTextChange}
-                />
-                {loadingPickup && (
-                  <ActivityIndicator style={styles.inputSpinner} size="small" color="#2563EB" />
-                )}
-                {pickupSuggestions.length > 0 && (
-                  <View style={styles.liveSuggestionsDropdown}>
-                    <ScrollView keyboardShouldPersistTaps="handled">
-                      {pickupSuggestions.map((item) => (
-                        <TouchableOpacity
-                          key={item.placePrediction.placeId}
-                          style={styles.liveSuggestionRow}
-                          onPress={() => handlePlaceSelect(item.placePrediction.placeId, item.placePrediction.text.text, true)}
-                        >
-                          <Text style={styles.liveSuggestionLabel}>{item.placePrediction.text.text}</Text>
-                        </TouchableOpacity>
-                      ))}
-                    </ScrollView>
+              {/* Unified Stacked Inputs Card + Plus Button Row */}
+              <View style={styles.inputsAndPlusRow}>
+                <View style={[styles.unifiedSearchCard, { backgroundColor: themeCard, borderColor: isDarkMode ? "#FFFFFF" : "#000000" }]}>
+                  {/* Left Connectors column */}
+                  <View style={styles.connectorColumn}>
+                    <View style={[styles.connectorDot, { borderColor: isDarkMode ? "#FFFFFF" : "#000000", backgroundColor: themeCard }]} />
+                    <View style={[styles.connectorLine, { backgroundColor: isDarkMode ? "#FFFFFF" : "#000000" }]} />
+                    <View style={[styles.connectorSquare, { backgroundColor: isDarkMode ? "#FFFFFF" : "#000000" }]} />
                   </View>
-                )}
+
+                  {/* Right Input text fields column */}
+                  <View style={{ flex: 1 }}>
+                    <View style={{ height: 44, justifyContent: "center" }}>
+                      <TextInput
+                        style={{ color: themeText, fontSize: 15, fontWeight: "600", paddingHorizontal: 4 }}
+                        placeholder="Where to pick up from?"
+                        placeholderTextColor="#94A3B8"
+                        value={pickupSearchText}
+                        onChangeText={handlePickupTextChange}
+                      />
+                      {loadingPickup && (
+                        <ActivityIndicator style={styles.miniSpinner} size="small" color="#2563EB" />
+                      )}
+                    </View>
+
+                    <View style={[styles.inputDivider, { backgroundColor: isDarkMode ? "#1F2937" : "#E2E8F0" }]} />
+
+                    <View style={{ height: 44, justifyContent: "center" }}>
+                      <TextInput
+                        style={{ color: themeText, fontSize: 15, fontWeight: "600", paddingHorizontal: 4 }}
+                        placeholder="Where to?"
+                        placeholderTextColor="#94A3B8"
+                        value={destinationSearchText}
+                        onChangeText={handleDestinationTextChange}
+                      />
+                      {loadingDestination && (
+                        <ActivityIndicator style={styles.miniSpinner} size="small" color="#2563EB" />
+                      )}
+                    </View>
+                  </View>
+                </View>
+
+                {/* Circular Plus Button */}
+                <TouchableOpacity style={[styles.addStopBtn, { backgroundColor: isDarkMode ? "#1E293B" : "#F1F5F9" }]} activeOpacity={0.7}>
+                  <Text style={[styles.addStopText, { color: themeText }]}>+</Text>
+                </TouchableOpacity>
               </View>
 
-              {/* Destination Address Field with Real Google API (New) */}
-              <View style={styles.inputSearchWrapper}>
-                <TextInput
-                  style={styles.realAddressInput}
-                  placeholder="Where to?"
-                  placeholderTextColor="#94A3B8"
-                  value={destinationSearchText}
-                  onChangeText={handleDestinationTextChange}
-                />
-                {loadingDestination && (
-                  <ActivityIndicator style={styles.inputSpinner} size="small" color="#2563EB" />
-                )}
-                {destinationSuggestions.length > 0 && (
-                  <View style={styles.liveSuggestionsDropdown}>
-                    <ScrollView keyboardShouldPersistTaps="handled">
-                      {destinationSuggestions.map((item) => (
-                        <TouchableOpacity
-                          key={item.placePrediction.placeId}
-                          style={styles.liveSuggestionRow}
-                          onPress={() => handlePlaceSelect(item.placePrediction.placeId, item.placePrediction.text.text, false)}
-                        >
-                          <Text style={styles.liveSuggestionLabel}>{item.placePrediction.text.text}</Text>
-                        </TouchableOpacity>
-                      ))}
-                    </ScrollView>
-                  </View>
-                )}
+              {/* Suggestions panels */}
+              {pickupSuggestions.length > 0 && (
+                <View style={[styles.liveSuggestionsDropdown, { backgroundColor: themeCard, borderColor: themeBorder }]}>
+                  <ScrollView keyboardShouldPersistTaps="handled">
+                    {pickupSuggestions.map((item) => (
+                      <TouchableOpacity
+                        key={item.placePrediction.placeId}
+                        style={[styles.liveSuggestionRow, { borderBottomColor: themeBorder }]}
+                        onPress={() => handlePlaceSelect(item.placePrediction.placeId, item.placePrediction.text.text, true)}
+                      >
+                        <Text style={[styles.liveSuggestionLabel, { color: themeText }]}>{item.placePrediction.text.text}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                </View>
+              )}
+
+              {destinationSuggestions.length > 0 && (
+                <View style={[styles.liveSuggestionsDropdown, { backgroundColor: themeCard, borderColor: themeBorder }]}>
+                  <ScrollView keyboardShouldPersistTaps="handled">
+                    {destinationSuggestions.map((item) => (
+                      <TouchableOpacity
+                        key={item.placePrediction.placeId}
+                        style={[styles.liveSuggestionRow, { borderBottomColor: themeBorder }]}
+                        onPress={() => handlePlaceSelect(item.placePrediction.placeId, item.placePrediction.text.text, false)}
+                      >
+                        <Text style={[styles.liveSuggestionLabel, { color: themeText }]}>{item.placePrediction.text.text}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                </View>
+              )}
+
+              {/* Saved Places Shortcuts (Uber Style) */}
+              <View style={styles.savedPlacesRow}>
+                <TouchableOpacity
+                  style={[styles.savedPlaceBtn, { backgroundColor: isDarkMode ? "#0F172A" : "#F1F5F9", borderColor: themeBorder }]}
+                  onPress={getCurrentLocation}
+                  activeOpacity={0.7}
+                >
+                  <Text style={[styles.savedPlaceBtnText, { color: themeText }]}>
+                    📍 Live GPS
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.savedPlaceBtn, { backgroundColor: isDarkMode ? "#0F172A" : "#F1F5F9", borderColor: themeBorder }]}
+                  onPress={() => handleSavedPlaceSelect("home")}
+                  activeOpacity={0.7}
+                >
+                  <Text style={[styles.savedPlaceBtnText, { color: themeText }]}>
+                    🏠 Home: {savedPlaces.home ? savedPlaces.home.split(",")[0] : "Set Home"}
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.savedPlaceBtn, { backgroundColor: isDarkMode ? "#0F172A" : "#F1F5F9", borderColor: themeBorder }]}
+                  onPress={() => handleSavedPlaceSelect("work")}
+                  activeOpacity={0.7}
+                >
+                  <Text style={[styles.savedPlaceBtnText, { color: themeText }]}>
+                    💼 Work: {savedPlaces.work ? savedPlaces.work.split(",")[0] : "Set Work"}
+                  </Text>
+                </TouchableOpacity>
               </View>
+
+              {showDatePicker && (
+                <View style={[styles.datePickerOverlay, { backgroundColor: themeCard, borderColor: themeBorder }]}>
+                  <View style={styles.datePickerHeader}>
+                    <Text style={[styles.datePickerTitle, { color: themeText }]}>Reserve Date & Time</Text>
+                    <TouchableOpacity onPress={() => setShowDatePicker(false)}>
+                      <Text style={[styles.datePickerCloseText, { color: themeText }]}>✕</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  <Text style={[styles.pickerSubHeader, { color: themeTextMuted }]}>Choose Day</Text>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginVertical: 8 }} contentContainerStyle={{ gap: 8 }}>
+                    {["Today", "Tomorrow", "Fri, Jul 17", "Sat, Jul 18", "Sun, Jul 19", "Mon, Jul 20"].map((day) => (
+                      <TouchableOpacity
+                        key={day}
+                        style={[
+                          styles.pickerDateBtn,
+                          scheduledDate === day && styles.pickerDateBtnActive,
+                          { borderColor: themeBorder }
+                        ]}
+                        onPress={() => setScheduledDate(day)}
+                      >
+                        <Text style={[styles.pickerDateText, { color: scheduledDate === day ? "#FFFFFF" : themeText }]}>
+                          {day}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+
+                  <Text style={[styles.pickerSubHeader, { color: themeTextMuted, marginTop: 8 }]}>Choose Time Slot</Text>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginVertical: 8 }} contentContainerStyle={{ gap: 8 }}>
+                    {["08:00 AM", "09:30 AM", "11:00 AM", "01:30 PM", "03:00 PM", "04:30 PM", "06:00 PM", "07:30 PM", "09:00 PM"].map((time) => (
+                      <TouchableOpacity
+                        key={time}
+                        style={[
+                          styles.pickerTimeBtn,
+                          scheduledTime === time && styles.pickerTimeBtnActive,
+                          { borderColor: themeBorder }
+                        ]}
+                        onPress={() => setScheduledTime(time)}
+                      >
+                        <Text style={[styles.pickerTimeText, { color: scheduledTime === time ? "#FFFFFF" : themeText }]}>
+                          {time}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+
+                  <View style={{ flexDirection: "row", gap: 10, marginTop: 14 }}>
+                    <TouchableOpacity
+                      style={[styles.pickerCancelBtn, { borderColor: themeBorder }]}
+                      onPress={() => {
+                        setScheduledDate("");
+                        setScheduledTime("");
+                        setShowDatePicker(false);
+                      }}
+                    >
+                      <Text style={[styles.pickerCancelBtnText, { color: themeText }]}>Clear Schedule</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.pickerConfirmBtn}
+                      onPress={() => {
+                        if (!scheduledDate || !scheduledTime) {
+                          Alert.alert("Selection Required", "Please pick both a day and a time slot.");
+                          return;
+                        }
+                        setShowDatePicker(false);
+                      }}
+                    >
+                      <Text style={styles.pickerConfirmText}>Confirm Schedule</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
             </View>
           )}
 
@@ -871,11 +1255,25 @@ export default function CustomerScreen() {
           )}
 
           {searchingDriver && rideStatus === "pending" && (
-            <View style={styles.searchingCard}>
-              <Text style={styles.searchingTitle}>Searching for the best driver</Text>
-              <Text style={styles.searchingText}>Your request is live and the nearest active driver is being notified.</Text>
-              <TouchableOpacity style={styles.cancelRideBtn} onPress={cancelRideRequest}>
-                <Text style={styles.cancelRideBtnText}>Cancel Request</Text>
+            <View style={[styles.searchingDrawer, { backgroundColor: themeCard }]}>
+              <View style={[styles.dragHandle, { backgroundColor: isDarkMode ? "#334155" : "#E2E8F0" }]} />
+
+              <View style={styles.searchingHeaderRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.searchingTitleText, { color: themeText }]}>Requesting your ride...</Text>
+                  <Text style={[styles.searchingSubText, { color: themeTextMuted }]}>
+                    Connecting to the nearest {selectedVehicle === "car" ? "RideX Go" : selectedVehicle === "bike" ? "RideX Moto" : "RideX Auto"} driver...
+                  </Text>
+                </View>
+                <ActivityIndicator size="large" color="#2563EB" style={{ marginLeft: 16 }} />
+              </View>
+
+              <View style={[styles.loadingBarContainer, { backgroundColor: isDarkMode ? "#1E293B" : "#F1F5F9" }]}>
+                <View style={styles.loadingBarPulse} />
+              </View>
+
+              <TouchableOpacity style={[styles.fullWidthCancelBtn, { backgroundColor: isDarkMode ? "#1E293B" : "#F1F5F9" }]} onPress={cancelRideRequest} activeOpacity={0.85}>
+                <Text style={[styles.fullWidthCancelText, { color: themeText }]}>Cancel Request</Text>
               </TouchableOpacity>
             </View>
           )}
@@ -935,57 +1333,65 @@ export default function CustomerScreen() {
           )}
 
           {distance && !rideStatus && (
-            <View style={styles.bottomCard}>
-              <View style={styles.dragHandle} />
+            <View style={[styles.bottomCard, { backgroundColor: themeCard }]}>
+              <View style={[styles.dragHandle, { backgroundColor: isDarkMode ? "#334155" : "#E2E8F0" }]} />
 
               <View style={styles.routeSummaryRow}>
-                <Text style={styles.routeSummaryText}>⏱️ {duration} mins • {distance} km</Text>
-                <TouchableOpacity style={styles.paymentMethodRow} activeOpacity={0.7}>
-                  <Text style={styles.paymentMethodText}>💵 Cash</Text>
-                  <Text style={styles.paymentMethodArrow}>›</Text>
+                <Text style={[styles.routeSummaryText, { color: themeText }]}>⏱️ {duration} mins • {distance} km</Text>
+                <TouchableOpacity style={[styles.paymentMethodRow, { backgroundColor: isDarkMode ? "#0F172A" : "#F8FAFC" }]} activeOpacity={0.7}>
+                  <Text style={[styles.paymentMethodText, { color: themeText }]}>{defaultPayment}</Text>
+                  <Text style={[styles.paymentMethodArrow, { color: themeText }]}>›</Text>
                 </TouchableOpacity>
               </View>
 
-              <Text style={styles.selectVehicleTitle}>Select vehicle class</Text>
+              {activePromo && (
+                <View style={{ backgroundColor: "#ECFDF5", borderWidth: 1.5, borderColor: "#A7F3D0", paddingVertical: 8, paddingHorizontal: 12, borderRadius: 12, alignSelf: "flex-start", marginBottom: 14 }}>
+                  <Text style={{ fontSize: 11.5, fontWeight: "800", color: "#065F46" }}>
+                    🎟️ Coupon Applied: {activePromo.code} ({activePromo.desc})
+                  </Text>
+                </View>
+              )}
+
+              <Text style={[styles.selectVehicleTitle, { color: themeText }]}>Select vehicle class</Text>
 
               <View style={styles.vehicleSelectorRow}>
                 <TouchableOpacity
-                  style={[styles.vehicleOptionCard, selectedVehicle === "bike" && styles.vehicleOptionCardSelected]}
+                  style={[styles.vehicleOptionCard, { backgroundColor: isDarkMode ? "#0F172A" : "#F8FAFC", borderColor: themeBorder }, selectedVehicle === "bike" && styles.vehicleOptionCardSelected]}
                   onPress={() => setSelectedVehicle("bike")}
                   activeOpacity={0.8}
                 >
                   <Text style={styles.vehicleIcon}>🏍️</Text>
                   <View style={styles.vehicleDetails}>
-                    <Text style={styles.vehicleLabel}>RideX Moto</Text>
-                    <Text style={styles.vehicleEtaText}>Quick & Solo • 2 mins</Text>
+                    <Text style={[styles.vehicleLabel, { color: themeText }]}>RideX Moto</Text>
+                    <Text style={[styles.vehicleEtaText, { color: themeTextMuted }]}>Quick & Solo • 2 mins</Text>
                   </View>
-                  <Text style={styles.vehiclePrice}>₹{getFareForVehicle("bike", Number(distance))}</Text>
+                  <Text style={[styles.vehiclePrice, { color: themeText }]}>₹{getDiscountedFare("bike", Number(distance))}</Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
-                  style={[styles.vehicleOptionCard, selectedVehicle === "auto" && styles.vehicleOptionCardSelected]}
+                  style={[styles.vehicleOptionCard, { backgroundColor: isDarkMode ? "#0F172A" : "#F8FAFC", borderColor: themeBorder }, selectedVehicle === "auto" && styles.vehicleOptionCardSelected]}
                   onPress={() => setSelectedVehicle("auto")}
                   activeOpacity={0.8}
                 >
                   <Text style={styles.vehicleIcon}>🛺</Text>
                   <View style={styles.vehicleDetails}>
-                    <Text style={styles.vehicleLabel}>RideX Auto</Text>
-                    <Text style={styles.vehicleEtaText}>Affordable Everyday • 3 mins</Text>
+                    <Text style={[styles.vehicleLabel, { color: themeText }]}>RideX Auto</Text>
+                    <Text style={[styles.vehicleEtaText, { color: themeTextMuted }]}>Affordable Everyday • 3 mins</Text>
                   </View>
-                  <Text style={styles.vehiclePrice}>₹{getFareForVehicle("auto", Number(distance))}</Text>
+                  <Text style={[styles.vehiclePrice, { color: themeText }]}>₹{getDiscountedFare("auto", Number(distance))}</Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
-                  style={[styles.vehicleOptionCard, selectedVehicle === "car" && styles.vehicleOptionCardSelected]}
+                  style={[styles.vehicleOptionCard, { backgroundColor: isDarkMode ? "#0F172A" : "#F8FAFC", borderColor: themeBorder }, selectedVehicle === "car" && styles.vehicleOptionCardSelected]}
                   onPress={() => setSelectedVehicle("car")}
                   activeOpacity={0.8}
                 >
                   <Text style={styles.vehicleIcon}>🚗</Text>
                   <View style={styles.vehicleDetails}>
-                    <Text style={styles.vehicleLabel}>RideX Go</Text>
-                    <Text style={styles.vehicleEtaText}>Premium Comfort • 4 mins</Text>
+                    <Text style={[styles.vehicleLabel, { color: themeText }]}>RideX Go</Text>
+                    <Text style={[styles.vehicleEtaText, { color: themeTextMuted }]}>Premium Comfort • 4 mins</Text>
                   </View>
-                  <Text style={styles.vehiclePrice}>₹{getFareForVehicle("car", Number(distance))}</Text>
+                  <Text style={[styles.vehiclePrice, { color: themeText }]}>₹{getDiscountedFare("car", Number(distance))}</Text>
                 </TouchableOpacity>
               </View>
 
@@ -1183,11 +1589,14 @@ const styles = StyleSheet.create({
   },
   searchContainer: {
     position: "absolute",
-    top: 46,
-    left: 20,
-    right: 20,
+    top: 0,
+    bottom: 0,
+    left: 0,
+    right: 0,
     zIndex: 999,
     elevation: 999,
+    paddingTop: 60,
+    paddingHorizontal: 20,
   },
   heroCard: {
     position: "relative",
@@ -1341,33 +1750,60 @@ const styles = StyleSheet.create({
   driverMarkerEmoji: {
     fontSize: 35,
   },
-  searchingCard: {
+  searchingDrawer: {
     position: "absolute",
-    bottom: 138,
-    left: 20,
-    right: 20,
-    backgroundColor: "rgba(255,255,255,0.98)",
-    borderRadius: 22,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: "rgba(37, 99, 235, 0.08)",
-    zIndex: 10,
-    shadowColor: "#0F172A",
+    bottom: 0,
+    left: 0,
+    right: 0,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    padding: 24,
+    zIndex: 9999,
+    shadowColor: "#000000",
     shadowOpacity: 0.1,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 10 },
-    elevation: 6,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: -4 },
+    elevation: 8,
   },
-  searchingTitle: {
-    color: "#0F172A",
-    fontWeight: "800",
-    fontSize: 16,
+  searchingHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 10,
+    marginBottom: 20,
   },
-  searchingText: {
-    color: "#64748B",
-    marginTop: 4,
+  searchingTitleText: {
+    fontSize: 19,
+    fontWeight: "900",
+    letterSpacing: -0.3,
+  },
+  searchingSubText: {
     fontSize: 13,
+    fontWeight: "600",
+    marginTop: 4,
     lineHeight: 18,
+  },
+  loadingBarContainer: {
+    height: 4,
+    width: "100%",
+    borderRadius: 2,
+    overflow: "hidden",
+    marginBottom: 24,
+  },
+  loadingBarPulse: {
+    height: "100%",
+    width: "35%",
+    backgroundColor: "#2563EB",
+    borderRadius: 2,
+  },
+  fullWidthCancelBtn: {
+    borderRadius: 16,
+    paddingVertical: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  fullWidthCancelText: {
+    fontSize: 15,
+    fontWeight: "900",
   },
   bottomCard: {
     position: "absolute",
@@ -2254,5 +2690,210 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#334155",
     fontStyle: "italic",
+  },
+  savedPlacesRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 6,
+    marginBottom: 12,
+  },
+  savedPlaceBtn: {
+    flex: 1,
+    backgroundColor: "#F1F5F9",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    borderRadius: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  savedPlaceBtnText: {
+    fontSize: 12,
+    fontWeight: "750",
+    color: "#475569",
+    textAlign: "center",
+  },
+  uberSearchHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 20,
+    gap: 12,
+    borderBottomWidth: 1.5,
+    borderBottomColor: "#F1F5F9",
+    paddingBottom: 14,
+  },
+  uberBackBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: "#F1F5F9",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  uberHeaderTitle: {
+    fontSize: 18,
+    fontWeight: "900",
+  },
+  pillsRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginBottom: 16,
+  },
+  pillBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+  },
+  pillText: {
+    fontSize: 12.5,
+    fontWeight: "750",
+  },
+  inputsAndPlusRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 14,
+  },
+  unifiedSearchCard: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    borderWidth: 2,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+  },
+  connectorColumn: {
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 12,
+    width: 20,
+    height: 80,
+  },
+  connectorDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    borderWidth: 2.5,
+  },
+  connectorLine: {
+    width: 2,
+    height: 26,
+    marginVertical: 4,
+  },
+  connectorSquare: {
+    width: 8,
+    height: 8,
+  },
+  inputDivider: {
+    height: 1,
+    width: "100%",
+  },
+  addStopBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  addStopText: {
+    fontSize: 22,
+    fontWeight: "500",
+  },
+  miniSpinner: {
+    position: "absolute",
+    right: 10,
+  },
+  datePickerOverlay: {
+    borderWidth: 1.5,
+    borderRadius: 20,
+    padding: 18,
+    marginTop: 14,
+    shadowColor: "#000000",
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 4,
+  },
+  datePickerHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 14,
+  },
+  datePickerTitle: {
+    fontSize: 16,
+    fontWeight: "900",
+  },
+  datePickerCloseText: {
+    fontSize: 16,
+    fontWeight: "800",
+    paddingHorizontal: 4,
+  },
+  pickerSubHeader: {
+    fontSize: 11,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    marginBottom: 6,
+  },
+  pickerDateBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  pickerDateBtnActive: {
+    backgroundColor: "#2563EB",
+    borderColor: "#2563EB",
+  },
+  pickerDateText: {
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  pickerTimeBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  pickerTimeBtnActive: {
+    backgroundColor: "#2563EB",
+    borderColor: "#2563EB",
+  },
+  pickerTimeText: {
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  pickerCancelBtn: {
+    flex: 1,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    paddingVertical: 11,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  pickerCancelBtnText: {
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  pickerConfirmBtn: {
+    flex: 1,
+    backgroundColor: "#2563EB",
+    borderRadius: 12,
+    paddingVertical: 11,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  pickerConfirmText: {
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: "900",
   },
 });

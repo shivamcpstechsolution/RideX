@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "RideX",
-    "slug": "ridex",
+    "slug": "LiveTrackingApp",
     "version": "1.0.0",
     "orientation": "portrait",
     "scheme": "ridex",
@@ -46,6 +46,7 @@
       "eas": {
         "projectId": "01fe44e1-6aad-4ce7-87f6-5a7e264ceb62"
       }
-    }
+    },
+    "owner": "shivam004"
   }
 }

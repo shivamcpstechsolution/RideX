@@ -19,8 +19,10 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { signupUser } from "../services/authService";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 export default function SignupScreen() {
+  const insets = useSafeAreaInsets();
   const params = useLocalSearchParams();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -125,67 +127,6 @@ export default function SignupScreen() {
     >
       <StatusBar barStyle="dark-content" backgroundColor="#F8FAFC" />
 
-      {/* Top Left Menu Selector (3 lines / hamburger menu) */}
-      <TouchableOpacity
-        style={styles.topLeftMenuBtn}
-        onPress={() => setShowRoleMenu(!showRoleMenu)}
-        activeOpacity={0.7}
-      >
-        <Ionicons name={showRoleMenu ? "close" : "menu"} size={24} color="#0F172A" />
-      </TouchableOpacity>
-
-      {showRoleMenu && (
-        <View style={styles.roleDropdown}>
-          <TouchableOpacity
-            style={[styles.roleDropdownItem, role === "rider" && styles.roleDropdownItemActiveRider]}
-            onPress={() => {
-              setRole("rider");
-              setShowRoleMenu(false);
-              setErrorMessage("");
-            }}
-            activeOpacity={0.85}
-          >
-            <View style={[styles.roleDropdownIcon, { backgroundColor: role === "rider" ? "#DBEAFE" : "#F1F5F9" }]}>
-              <Text style={styles.roleDropdownEmoji}>🚖</Text>
-            </View>
-            <View style={styles.roleDropdownTextGroup}>
-              <Text style={[styles.roleDropdownTitle, role === "rider" && styles.roleDropdownTitleActive]}>
-                Rider Account
-              </Text>
-              <Text style={styles.roleDropdownDesc}>Request standard & luxury rides</Text>
-            </View>
-            {role === "rider" && (
-              <Ionicons name="checkmark-circle" size={18} color="#2563EB" />
-            )}
-          </TouchableOpacity>
-
-          <View style={styles.roleDropdownDivider} />
-
-          <TouchableOpacity
-            style={[styles.roleDropdownItem, role === "driver" && styles.roleDropdownItemActiveDriver]}
-            onPress={() => {
-              setRole("driver");
-              setShowRoleMenu(false);
-              setErrorMessage("");
-            }}
-            activeOpacity={0.85}
-          >
-            <View style={[styles.roleDropdownIcon, { backgroundColor: role === "driver" ? "#D1FAE5" : "#F1F5F9" }]}>
-              <Text style={styles.roleDropdownEmoji}>🏎️</Text>
-            </View>
-            <View style={styles.roleDropdownTextGroup}>
-              <Text style={[styles.roleDropdownTitle, role === "driver" && styles.roleDropdownTitleActive]}>
-                Driver Partner
-              </Text>
-              <Text style={styles.roleDropdownDesc}>Go online & earn money</Text>
-            </View>
-            {role === "driver" && (
-              <Ionicons name="checkmark-circle" size={18} color="#10B981" />
-            )}
-          </TouchableOpacity>
-        </View>
-      )}
-
       {/* Decorative Glow Blobs */}
       <View style={styles.glowBlobOne} />
       <View style={styles.glowBlobTwo} />
@@ -199,11 +140,77 @@ export default function SignupScreen() {
 
       <ScrollView 
         style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent} 
+        contentContainerStyle={[
+          styles.scrollContent,
+          {
+            paddingTop: insets.top > 0 ? insets.top + 20 : 24,
+            paddingBottom: insets.bottom > 0 ? insets.bottom + 40 : 80,
+          }
+        ]} 
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        <View style={[styles.card, { overflow: "hidden" }]}>
+        <View style={[styles.card, { overflow: "visible" }]}>
+          {/* Top Left Menu Selector inside card */}
+          <TouchableOpacity
+            style={styles.cardMenuBtn}
+            onPress={() => setShowRoleMenu(!showRoleMenu)}
+            activeOpacity={0.7}
+          >
+            <Ionicons name={showRoleMenu ? "close" : "menu"} size={22} color="#0F172A" />
+          </TouchableOpacity>
+
+          {showRoleMenu && (
+            <View style={styles.roleDropdownInside}>
+              <TouchableOpacity
+                style={[styles.roleDropdownItem, role === "rider" && styles.roleDropdownItemActiveRider]}
+                onPress={() => {
+                  setRole("rider");
+                  setShowRoleMenu(false);
+                  setErrorMessage("");
+                }}
+                activeOpacity={0.85}
+              >
+                <View style={[styles.roleDropdownIcon, { backgroundColor: role === "rider" ? "#DBEAFE" : "#F1F5F9" }]}>
+                  <Text style={styles.roleDropdownEmoji}>🚖</Text>
+                </View>
+                <View style={styles.roleDropdownTextGroup}>
+                  <Text style={[styles.roleDropdownTitle, role === "rider" && styles.roleDropdownTitleActive]}>
+                    Rider Account
+                  </Text>
+                  <Text style={styles.roleDropdownDesc}>Request standard & luxury rides</Text>
+                </View>
+                {role === "rider" && (
+                  <Ionicons name="checkmark-circle" size={18} color="#2563EB" />
+                )}
+              </TouchableOpacity>
+
+              <View style={styles.roleDropdownDivider} />
+
+              <TouchableOpacity
+                style={[styles.roleDropdownItem, role === "driver" && styles.roleDropdownItemActiveDriver]}
+                onPress={() => {
+                  setRole("driver");
+                  setShowRoleMenu(false);
+                  setErrorMessage("");
+                }}
+                activeOpacity={0.85}
+              >
+                <View style={[styles.roleDropdownIcon, { backgroundColor: role === "driver" ? "#D1FAE5" : "#F1F5F9" }]}>
+                  <Text style={styles.roleDropdownEmoji}>🏎️</Text>
+                </View>
+                <View style={styles.roleDropdownTextGroup}>
+                  <Text style={[styles.roleDropdownTitle, role === "driver" && styles.roleDropdownTitleActive]}>
+                    Driver Partner
+                  </Text>
+                  <Text style={styles.roleDropdownDesc}>Go online & earn money</Text>
+                </View>
+                {role === "driver" && (
+                  <Ionicons name="checkmark-circle" size={18} color="#10B981" />
+                )}
+              </TouchableOpacity>
+            </View>
+          )}
 
           <View style={styles.header}>
             <View style={styles.logoContainer}>
@@ -677,13 +684,13 @@ const styles = StyleSheet.create({
     marginVertical: 0,
     backgroundColor: "transparent",
   },
-  topLeftMenuBtn: {
+  cardMenuBtn: {
     position: "absolute",
-    top: 55,
-    left: 20,
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    top: 16,
+    left: 16,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     backgroundColor: "#FFFFFF",
     borderWidth: 1.5,
     borderColor: "#E2E8F0",
@@ -696,10 +703,10 @@ const styles = StyleSheet.create({
     elevation: 3,
     zIndex: 999,
   },
-  roleDropdown: {
+  roleDropdownInside: {
     position: "absolute",
-    top: 110,
-    left: 20,
+    top: 64,
+    left: 16,
     width: 280,
     backgroundColor: "#FFFFFF",
     borderRadius: 24,

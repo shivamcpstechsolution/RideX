@@ -4,6 +4,7 @@ import {
     Animated,
     Dimensions,
     Easing,
+    Linking,
     Modal,
     Platform,
     ScrollView,
@@ -18,7 +19,7 @@ import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import * as Location from "expo-location";
-import MapView, { Marker } from "react-native-maps";
+import MapView, { Marker, Circle } from "react-native-maps";
 import MapViewDirections from "react-native-maps-directions";
 
 import { onValue, ref, set, update } from "firebase/database";
@@ -105,6 +106,7 @@ export default function DriverScreen() {
   const [lastRideId, setLastRideId] = useState("");
   const [isCompletingRide, setIsCompletingRide] = useState(false);
   const [isActive, setIsActive] = useState(true);
+  const [mapType, setMapType] = useState<"standard" | "satellite" | "hybrid">("standard");
 
   // Simulated metrics & timer states
   const [dailyEarnings, setDailyEarnings] = useState(1850);
@@ -369,8 +371,27 @@ export default function DriverScreen() {
   }, [location?.latitude, location?.longitude, rideRequest?.status]);
 
   const startTracking = async () => {
-    const { status } = await Location.requestForegroundPermissionsAsync();
-    if (status !== "granted") return;
+    let permissionGranted = false;
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      permissionGranted = (status === "granted");
+    } catch (err) {
+      console.warn("Location permission check failed, using fallback:", err);
+    }
+
+    if (!permissionGranted) {
+      // Permission not granted - write default Delhi coordinates to Firebase so the driver remains online/testable
+      const fallbackCoords = { latitude: 28.6139, longitude: 77.2090 };
+      setLocation(fallbackCoords);
+      if (user) {
+        await update(ref(db, `drivers/${user.uid}`), {
+          latitude: fallbackCoords.latitude,
+          longitude: fallbackCoords.longitude,
+          isActive: isActiveRef.current,
+        });
+      }
+      return;
+    }
 
     // Fetch initial driver coordinates immediately on app startup
     try {
@@ -391,7 +412,16 @@ export default function DriverScreen() {
         });
       }
     } catch (err) {
-      console.warn("Failed to get initial driver position:", err);
+      console.warn("Failed to get initial driver position, writing default fallback:", err);
+      const fallbackCoords = { latitude: 28.6139, longitude: 77.2090 };
+      setLocation(fallbackCoords);
+      if (user) {
+        await update(ref(db, `drivers/${user.uid}`), {
+          latitude: fallbackCoords.latitude,
+          longitude: fallbackCoords.longitude,
+          isActive: isActiveRef.current,
+        });
+      }
     }
 
     if (trackingSubRef.current) {
@@ -552,6 +582,23 @@ export default function DriverScreen() {
     );
   };
 
+  const handleOpenNavigation = () => {
+    if (!rideRequest) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    const dest = rideRequest.status === "accepted" ? rideRequest.source : rideRequest.destination;
+    if (!dest) return;
+    
+    const url = Platform.select({
+      ios: `maps://app?saddr=${location?.latitude || ""},${location?.longitude || ""}&daddr=${dest.latitude},${dest.longitude}`,
+      android: `google.navigation:q=${dest.latitude},${dest.longitude}`,
+    }) || `https://www.google.com/maps/dir/?api=1&destination=${dest.latitude},${dest.longitude}`;
+
+    Linking.openURL(url).catch((err) => {
+      console.error("Failed to open maps application:", err);
+      Alert.alert("Navigation Error", "Could not launch Google Maps or Apple Maps.");
+    });
+  };
+
   return (
     <View style={styles.container}>
       <StatusBar barStyle="dark-content" translucent backgroundColor="transparent" />
@@ -560,6 +607,7 @@ export default function DriverScreen() {
       <MapView
         ref={mapRef}
         style={styles.map}
+        mapType={mapType}
         customMapStyle={silverMapStyle}
         showsUserLocation={false}
         initialRegion={{
@@ -569,6 +617,54 @@ export default function DriverScreen() {
           longitudeDelta: 0.05,
         }}
       >
+        {/* Render Surge Zones (Translucent Heatmap Circles) & Labels */}
+        {location && (
+          <>
+            <Circle
+              center={{
+                latitude: location.latitude + 0.008,
+                longitude: location.longitude + 0.008,
+              }}
+              radius={800}
+              fillColor="rgba(239, 68, 68, 0.15)"
+              strokeColor="rgba(239, 68, 68, 0.3)"
+              strokeWidth={1}
+            />
+            <Circle
+              center={{
+                latitude: location.latitude - 0.012,
+                longitude: location.longitude - 0.005,
+              }}
+              radius={1200}
+              fillColor="rgba(249, 115, 22, 0.12)"
+              strokeColor="rgba(249, 115, 22, 0.25)"
+              strokeWidth={1}
+            />
+            <Marker
+              coordinate={{
+                latitude: location.latitude + 0.008,
+                longitude: location.longitude + 0.008,
+              }}
+              anchor={{ x: 0.5, y: 0.5 }}
+            >
+              <View style={styles.surgeMarkerCard}>
+                <Text style={styles.surgeMarkerText}>⚡ +₹45 Surge</Text>
+              </View>
+            </Marker>
+            <Marker
+              coordinate={{
+                latitude: location.latitude - 0.012,
+                longitude: location.longitude - 0.005,
+              }}
+              anchor={{ x: 0.5, y: 0.5 }}
+            >
+              <View style={styles.surgeMarkerCard}>
+                <Text style={styles.surgeMarkerText}>⚡ +₹25 Surge</Text>
+              </View>
+            </Marker>
+          </>
+        )}
+
         {/* Render Live Routing Paths */}
         {location && rideRequest && (rideRequest.status === "pending" || rideRequest.status === "accepted") && rideRequest.source && (
           <MapViewDirections
@@ -627,63 +723,107 @@ export default function DriverScreen() {
         )}
       </MapView>
 
+      {/* Floating Map Type Selector Button */}
+      <TouchableOpacity 
+        style={styles.mapTypeFloatingBtn}
+        onPress={() => {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          setMapType((prev) => 
+            prev === "standard" ? "satellite" : prev === "satellite" ? "hybrid" : "standard"
+          );
+        }}
+        activeOpacity={0.8}
+      >
+        <Ionicons name="layers" size={16} color="#475569" />
+        <Text style={styles.mapTypeFloatingText}>
+          {mapType === "standard" ? "Standard" : mapType === "satellite" ? "Satellite" : "Hybrid"}
+        </Text>
+      </TouchableOpacity>
+
       {/* Floating Modern Header bar */}
       <View style={styles.headerFloatingContainer}>
-        <View style={styles.headerRow}>
-          {/* Avatar Profile */}
-          <TouchableOpacity 
-            style={styles.avatarButton}
-            onPress={() => setShowEarningsModal(true)}
-          >
-            <View style={styles.avatarCircle}>
-              <Text style={styles.avatarText}>
-                {user?.displayName ? user.displayName.substring(0, 2).toUpperCase() : "DR"}
+        {!rideRequest || rideRequest.status === "pending" ? (
+          <View style={styles.headerRow}>
+            {/* Avatar Profile */}
+            <TouchableOpacity 
+              style={styles.avatarButton}
+              onPress={() => setShowEarningsModal(true)}
+            >
+              <View style={styles.avatarCircle}>
+                <Text style={styles.avatarText}>
+                  {user?.displayName ? user.displayName.substring(0, 2).toUpperCase() : "DR"}
+                </Text>
+              </View>
+            </TouchableOpacity>
+
+            {/* Go Online/Offline Uber Slide Toggle */}
+            <TouchableOpacity 
+              style={[styles.toggleContainer, isActive ? styles.toggleContainerActive : styles.toggleContainerInactive]}
+              onPress={toggleAvailability}
+              activeOpacity={0.9}
+            >
+              <Animated.View style={[
+                styles.toggleCircle,
+                {
+                  transform: [{
+                    translateX: toggleSlideAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [4, 106]
+                    })
+                  }]
+                }
+              ]}>
+                <Ionicons 
+                  name={isActive ? "radio-button-on" : "radio-button-off"} 
+                  size={18} 
+                  color={isActive ? "#10b981" : "#ef4444"} 
+                />
+              </Animated.View>
+              <Text style={[styles.toggleText, isActive ? styles.toggleTextActive : styles.toggleTextInactive]}>
+                {isActive ? "ONLINE" : "OFFLINE"}
+              </Text>
+            </TouchableOpacity>
+
+            {/* Menu Info/Help */}
+            <TouchableOpacity 
+              style={styles.headerInfoButton}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                Alert.alert("RideX Driver Portal", `Logged in as: ${user?.email || "Partner"}`);
+              }}
+            >
+              <Ionicons name="information-circle" size={24} color="#94a3b8" />
+            </TouchableOpacity>
+          </View>
+        ) : (
+          /* ================== NAVIGATION HUD (UBER DRIVER HUD SYSTEM) ================== */
+          <View style={styles.navigationHudCard}>
+            <View style={styles.hudIconCircle}>
+              <Ionicons 
+                name={rideRequest.status === "accepted" ? "navigate" : "arrow-forward-outline"} 
+                size={22} 
+                color="#ffffff" 
+              />
+            </View>
+            <View style={styles.hudContent}>
+              <Text style={styles.hudDistanceText}>
+                {rideRequest.status === "accepted" ? "Navigate to Customer" : "Driving to Destination"}
+              </Text>
+              <Text style={styles.hudAddressText} numberOfLines={1}>
+                {rideRequest.status === "accepted" ? rideRequest.pickupAddress : rideRequest.destinationAddress}
               </Text>
             </View>
-          </TouchableOpacity>
-
-          {/* Go Online/Offline Uber Slide Toggle */}
-          <TouchableOpacity 
-            style={[styles.toggleContainer, isActive ? styles.toggleContainerActive : styles.toggleContainerInactive]}
-            onPress={toggleAvailability}
-            activeOpacity={0.9}
-          >
-            <Animated.View style={[
-              styles.toggleCircle,
-              {
-                transform: [{
-                  translateX: toggleSlideAnim.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [4, 106]
-                  })
-                }]
-              }
-            ]}>
-              <Ionicons 
-                name={isActive ? "radio-button-on" : "radio-button-off"} 
-                size={18} 
-                color={isActive ? "#10b981" : "#ef4444"} 
-              />
-            </Animated.View>
-            <Text style={[styles.toggleText, isActive ? styles.toggleTextActive : styles.toggleTextInactive]}>
-              {isActive ? "ONLINE" : "OFFLINE"}
-            </Text>
-          </TouchableOpacity>
-
-          {/* Menu Info/Help */}
-          <TouchableOpacity 
-            style={styles.headerInfoButton}
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              Alert.alert("RideX Driver Portal", `Logged in as: ${user?.email || "Partner"}`);
-            }}
-          >
-            <Ionicons name="information-circle" size={24} color="#94a3b8" />
-          </TouchableOpacity>
-        </View>
+            <View style={styles.hudEtaContainer}>
+              <Text style={styles.hudEtaText}>
+                {rideRequest.status === "accepted" ? (Math.ceil(rideRequest.duration / 3) || 4) : (rideRequest.duration || 12)}
+              </Text>
+              <Text style={styles.hudEtaUnit}>MIN</Text>
+            </View>
+          </View>
+        )}
 
         {/* Stats Row */}
-        {isActive && (
+        {isActive && !rideRequest && (
           <View style={styles.statsCard}>
             <TouchableOpacity 
               style={styles.statColumn}
@@ -887,6 +1027,13 @@ export default function DriverScreen() {
             </View>
 
             <View style={styles.commButtonsRow}>
+              <TouchableOpacity 
+                style={styles.commCircleButton}
+                onPress={handleOpenNavigation}
+              >
+                <Ionicons name="navigate" size={20} color="#10b981" />
+              </TouchableOpacity>
+
               <TouchableOpacity 
                 style={styles.commCircleButton}
                 onPress={triggerCustomerCall}
@@ -1497,7 +1644,7 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: "#F8FAFC",
+    backgroundColor: "#0F172A",
     zIndex: 999,
     paddingHorizontal: 24,
     paddingTop: 80,
@@ -1533,7 +1680,7 @@ const styles = StyleSheet.create({
     letterSpacing: 1.5,
   },
   ringingFareText: {
-    color: "#0F172A",
+    color: "#FFFFFF",
     fontSize: 48,
     fontWeight: "900",
     marginTop: 12,
@@ -1580,13 +1727,13 @@ const styles = StyleSheet.create({
   },
   ringingDetailsCard: {
     width: "100%",
-    backgroundColor: "#ffffff",
+    backgroundColor: "#1E293B",
     borderRadius: 24,
     padding: 20,
     borderWidth: 1.5,
-    borderColor: "#E2E8F0",
-    shadowColor: "#0F172A",
-    shadowOpacity: 0.08,
+    borderColor: "#334155",
+    shadowColor: "#000",
+    shadowOpacity: 0.15,
     shadowRadius: 16,
     shadowOffset: { width: 0, height: 6 },
     elevation: 4,
@@ -1601,15 +1748,15 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#F1F5F9",
+    backgroundColor: "#334155",
     paddingVertical: 8,
     borderRadius: 14,
     gap: 6,
     borderWidth: 1,
-    borderColor: "#E2E8F0",
+    borderColor: "#475569",
   },
   metaChipText: {
-    color: "#475569",
+    color: "#E2E8F0",
     fontSize: 12,
     fontWeight: "800",
   },
@@ -1633,7 +1780,7 @@ const styles = StyleSheet.create({
   routeConnectorLine: {
     width: 2,
     flex: 1,
-    backgroundColor: "#CBD5E1",
+    backgroundColor: "#475569",
     marginVertical: 4,
   },
   redRouteDot: {
@@ -1657,7 +1804,7 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
   },
   routeAddressText: {
-    color: "#0F172A",
+    color: "#FFFFFF",
     fontSize: 14,
     fontWeight: "700",
     marginTop: 2,
@@ -1666,7 +1813,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     borderTopWidth: 1.5,
-    borderTopColor: "#F1F5F9",
+    borderTopColor: "#334155",
     paddingTop: 12,
   },
   passengerBriefAvatar: {
@@ -1686,7 +1833,7 @@ const styles = StyleSheet.create({
     marginLeft: 12,
   },
   passengerBriefName: {
-    color: "#0F172A",
+    color: "#FFFFFF",
     fontSize: 14,
     fontWeight: "800",
   },
@@ -2499,5 +2646,104 @@ const styles = StyleSheet.create({
     backgroundColor: "#3b82f6",
     alignItems: "center",
     justifyContent: "center",
+  },
+  mapTypeFloatingBtn: {
+    position: "absolute",
+    right: 16,
+    top: 220,
+    backgroundColor: "#ffffff",
+    borderRadius: 20,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    zIndex: 99,
+  },
+  mapTypeFloatingText: {
+    color: "#475569",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  navigationHudCard: {
+    backgroundColor: "#0F172A",
+    borderRadius: 20,
+    padding: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    borderWidth: 1.5,
+    borderColor: "#1E293B",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.2,
+    shadowRadius: 10,
+    elevation: 6,
+    width: "100%",
+  },
+  hudIconCircle: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "#059669",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 12,
+  },
+  hudContent: {
+    flex: 1,
+  },
+  hudDistanceText: {
+    color: "#34D399",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  hudAddressText: {
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: "600",
+    marginTop: 2,
+  },
+  hudEtaContainer: {
+    alignItems: "center",
+    justifyContent: "center",
+    borderLeftWidth: 1,
+    borderLeftColor: "#1E293B",
+    paddingLeft: 12,
+    marginLeft: 8,
+  },
+  hudEtaText: {
+    color: "#FFFFFF",
+    fontSize: 18,
+    fontWeight: "900",
+  },
+  hudEtaUnit: {
+    color: "#94A3B8",
+    fontSize: 9,
+    fontWeight: "800",
+    marginTop: 1,
+  },
+  surgeMarkerCard: {
+    backgroundColor: "#EF4444",
+    borderRadius: 10,
+    paddingVertical: 5,
+    paddingHorizontal: 9,
+    shadowColor: "#000",
+    shadowOpacity: 0.15,
+    shadowRadius: 3,
+    elevation: 3,
+    borderWidth: 1,
+    borderColor: "#FFFFFF",
+  },
+  surgeMarkerText: {
+    color: "#FFFFFF",
+    fontSize: 9,
+    fontWeight: "900",
   },
 });
